@@ -4,7 +4,11 @@ import os
 import sqlite3
 from datetime import datetime
 
+from google import genai
+from google.genai import types as genai_types
+
 from aiogram import Bot, Dispatcher, F
+from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,12 +20,17 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "data.db")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN. Добавь переменную окружения BOT_TOKEN с токеном от @BotFather.")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+conversation_histories: dict[int, list[dict]] = {}
 
 
 # ---------- БАЗА ДАННЫХ ----------
@@ -62,6 +71,10 @@ class QuickAddState(StatesGroup):
     waiting_time = State()
 
 
+class AIConversationState(StatesGroup):
+    chatting = State()
+
+
 # ---------- КЛАВИАТУРЫ ----------
 
 def idea_keyboard(item_id: int) -> InlineKeyboardMarkup:
@@ -90,6 +103,12 @@ def later_keyboard(item_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def stop_ai_keyboard() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🛑 Завершить чат с ИИ", callback_data="stop_ai")
+    return b.as_markup()
+
+
 def is_valid_time(s: str) -> bool:
     try:
         h, m = s.split(":")
@@ -99,13 +118,15 @@ def is_valid_time(s: str) -> bool:
 
 
 HELP_TEXT = (
-    "Я помогу не терять идеи и не забывать рутины.\n\n"
+    "Я помогу не терять идеи, напоминать о делах и отвечать на вопросы.\n\n"
     "📝 Просто напиши мне любую мысль — сохраню её как идею в инбокс.\n"
     "/ideas — посмотреть идеи и решить, что с ними делать\n"
     "/add Текст — сразу создать напоминание (спрошу время)\n"
     "/later Текст — закинуть что-то в «когда-нибудь» (книга, практика, не срочное)\n"
     "/later — посмотреть список «когда-нибудь»\n"
     "/tasks — список активных напоминаний\n"
+    "/ai Вопрос — задать вопрос ИИ\n"
+    "/ai — войти в режим диалога с ИИ (выход: /stop)\n"
     "/help — это сообщение"
 )
 
@@ -287,6 +308,93 @@ async def delete_item(callback: CallbackQuery):
     conn.close()
     await callback.message.edit_text(callback.message.text + "\n\n🗑 Удалено")
     await callback.answer("Удалено")
+
+
+# ---------- ИИ-ПОМОЩНИК ----------
+
+async def get_ai_response(chat_id: int, user_message: str) -> str:
+    history = conversation_histories.get(chat_id, [])
+
+    contents = [
+        genai_types.Content(role=m["role"], parts=[genai_types.Part(text=m["text"])])
+        for m in history[-20:]
+    ]
+    contents.append(genai_types.Content(role="user", parts=[genai_types.Part(text=user_message)]))
+
+    response = await gemini_client.aio.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=contents,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=(
+                "Ты полезный ИИ-ассистент в Telegram боте. "
+                "Отвечай кратко, по делу и на русском языке."
+            ),
+            max_output_tokens=1024,
+        ),
+    )
+
+    assistant_text = response.text
+
+    if chat_id not in conversation_histories:
+        conversation_histories[chat_id] = []
+
+    conversation_histories[chat_id].append({"role": "user", "text": user_message})
+    conversation_histories[chat_id].append({"role": "model", "text": assistant_text})
+
+    return assistant_text
+
+
+@dp.message(Command("ai"))
+async def ai_command(message: Message, state: FSMContext):
+    if not gemini_client:
+        await message.answer(
+            "⚠️ ИИ не настроен.\n"
+            "Добавь переменную окружения GEMINI_API_KEY с ключом от aistudio.google.com"
+        )
+        return
+
+    text = message.text.replace("/ai", "", 1).strip()
+
+    if text:
+        await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+        try:
+            response = await get_ai_response(message.chat.id, text)
+            await message.answer(f"🤖 {response}")
+        except Exception as e:
+            logging.error(f"AI error: {e}")
+            await message.answer("❌ Произошла ошибка при обращении к ИИ. Попробуй позже.")
+    else:
+        conversation_histories.pop(message.chat.id, None)
+        await state.set_state(AIConversationState.chatting)
+        await message.answer(
+            "🤖 Режим разговора с ИИ активирован!\n"
+            "Задавай любые вопросы. Для выхода — /stop",
+            reply_markup=stop_ai_keyboard(),
+        )
+
+
+@dp.callback_query(F.data == "stop_ai")
+async def stop_ai_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("✅ Разговор с ИИ завершён. Снова сохраняю твои идеи.")
+    await callback.answer()
+
+
+@dp.message(Command("stop"))
+async def stop_command(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("✅ Режим ИИ завершён. Снова сохраняю твои идеи.")
+
+
+@dp.message(AIConversationState.chatting, F.text)
+async def ai_chat_message(message: Message):
+    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    try:
+        response = await get_ai_response(message.chat.id, message.text)
+        await message.answer(f"🤖 {response}")
+    except Exception as e:
+        logging.error(f"AI chat error: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуй ещё раз.")
 
 
 # ---------- ЛОВИМ ЛЮБОЙ ТЕКСТ КАК НОВУЮ ИДЕЮ ----------
