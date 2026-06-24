@@ -160,37 +160,29 @@ async def classify_message(text: str) -> dict:
     weekdays = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']
     weekday_ru = weekdays[now_vn.weekday()]
 
-    system_prompt = f"""Ты личный ассистент. Анализируй сообщение и классифицируй каждый пункт отдельно.
+    tomorrow = (now_vn.date() + timedelta(days=1)).strftime('%Y-%m-%d')
+    system_prompt = f"""Ты личный ассистент-органайзер. Сегодня {today_str} ({weekday_ru}), год {now_vn.year}. Пользователь в Вьетнаме UTC+7.
 
-Сегодня: {today_str}, {weekday_ru}. Пользователь во Вьетнаме (UTC+7).
+Разбери сообщение на отдельные пункты и верни JSON:
+{{"items":[{{"type":"...","text":"...","date":"...","time":"..."}}],"response":"..."}}
 
-Верни ТОЛЬКО валидный JSON:
-{{
-  "items": [
-    {{
-      "type": "plan|routine|someday|reflection|question",
-      "text": "текст одного пункта",
-      "date": "YYYY-MM-DD или null",
-      "time": "HH:MM или null"
-    }}
-  ],
-  "response": "короткий ответ на русском — подтверждение или ответ на вопрос"
-}}
+ТИПЫ — выбирай строго по смыслу:
+• plan — дело привязанное к конкретной дате или времени («встреча в пятницу», «7 июля», «завтра», «сегодня»)
+• routine — повторяющаяся ежедневная привычка («каждый день», «по утрам», «ежедневно»)
+• someday — мечта или идея БЕЗ конкретной даты («хочу когда-нибудь», «было бы здорово»)
+• reflection — личные мысли, чувства, наблюдения о себе
+• question — вопрос или просьба об информации (только ответь в response, не сохраняй)
 
-Типы:
-- plan: конкретное дело с датой (сегодня/завтра/в пятницу/числа месяца)
-- routine: ежедневная привычка которую надо делать каждый день
-- someday: мечта, идея без даты, «хочу когда-нибудь»
-- reflection: наблюдения о себе, чувства, мысли о жизни
-- question: вопрос или разговор (не сохраняй, только ответь в response)
+ДАТЫ (используй ТОЛЬКО год {now_vn.year}):
+• «завтра» = {tomorrow}
+• «сегодня» = {today_str}
+• «в пятницу/субботу/...» = ближайший такой день после сегодня
+• числа без года → {now_vn.year} (или следующий год если дата уже прошла)
 
-Если в сообщении несколько дел — каждое отдельным элементом в items.
+ТЕКСТ (поле text): перепиши грамотно и чисто, исправь все ошибки. Для plan — формулируй как действие с глаголом.
+Примеры: «зап на узи голеностоп» → «Записаться на УЗИ голеностопа» | «психолог 16-18» → «Сеанс у психолога» | «посчитать финансы» → «Подвести финансовый итог месяца»
 
-ДАТЫ: сегодня {today_str} год {now_vn.year}. Используй ТОЛЬКО этот год при расчёте дат. «Завтра» = {(now_vn.date() + timedelta(days=1)).strftime('%Y-%m-%d')}. Никогда не пиши даты из прошлого.
-
-ТЕКСТ: поле text — финальная грамотная версия, НЕ черновик. Исправь орфографию и пунктуацию, перепиши чисто. Для plan — чёткое действие с глаголом. Пример: «зап на узи голеностоп» → «Записаться на УЗИ голеностопа».
-
-ОТВЕТ: поле response — короткое подтверждение, максимум одно предложение."""
+ОТВЕТ (поле response): одно короткое предложение-подтверждение на русском."""
 
     response = await groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -447,75 +439,100 @@ def _fetch_tasks(chat_id: int, start: date, end: date) -> dict[str, list[str]]:
     return result
 
 
-PILL_COLORS = ['#1a73e8', '#0f9d58', '#e67c00', '#d32f2f', '#7b1fa2', '#0097a7', '#c2185b', '#388e3c']
+# пастельная палитра
+BG        = '#fdf8ff'   # фон страницы
+CARD_BG   = '#ffffff'   # фон карточки дня
+WKND_BG   = '#f8f4ff'   # фон выходного
+HDR_TODAY = '#d8b4fe'   # шапка сегодня (лаванда)
+HDR_WKND  = '#fce7f3'   # шапка выходного (пудра)
+HDR_REG   = '#f0e9ff'   # шапка обычного дня
+TXT_MAIN  = '#3d2c5e'   # основной текст
+TXT_MUTED = '#b0a0c8'   # приглушённый текст
+BORDER    = '#ede8f5'   # граница
+
+PASTEL_PILLS = [
+    ('#e9d5ff', '#6b21a8'),  # лаванда
+    ('#fce7f3', '#9d174d'),  # розовая пудра
+    ('#d1fae5', '#065f46'),  # мята
+    ('#fef3c7', '#92400e'),  # персик
+    ('#dbeafe', '#1e40af'),  # нежно-голубой
+    ('#ffd7d7', '#991b1b'),  # пастельный коралл
+    ('#d4f5e9', '#155e3c'),  # шалфей
+    ('#ede9fe', '#4c1d95'),  # сирень
+]
 
 
 def _draw_week(chat_id: int, days: list, today: date) -> bytes:
     tasks = _fetch_tasks(chat_id, days[0], days[-1])
 
-    WIDTH = 900
-    PAD = 30
-    TITLE_H = 50
-    DAY_H = 56
-    LINE_H = 40
-    GAP = 6
+    WIDTH = 860
+    PAD   = 28
+    TITLE_H = 54
+    DAY_H   = 52
+    LINE_H  = 42
+    GAP     = 8
+    R       = 10  # радиус скругления шапки
 
     total_h = TITLE_H
     for d in days:
         n = len(tasks.get(d.strftime('%Y-%m-%d'), []))
         total_h += DAY_H + max(n, 1) * LINE_H + GAP * 2
-    total_h += PAD
+    total_h += PAD + 10
 
     fig = plt.figure(figsize=(WIDTH / 100, total_h / 100), dpi=150)
-    fig.patch.set_facecolor('#ffffff')
+    fig.patch.set_facecolor(BG)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, WIDTH)
     ax.set_ylim(0, total_h)
     ax.invert_yaxis()
     ax.axis('off')
 
-    title = f"Неделя  {days[0].strftime('%d')} – {days[-1].strftime('%d %B %Y')}"
-    ax.text(WIDTH / 2, 18, title, ha='center', va='top',
-            fontsize=16, color='#202124', fontweight='bold')
+    title = f"{days[0].strftime('%d')} – {days[-1].strftime('%d %B %Y')}"
+    ax.text(WIDTH / 2, 16, title, ha='center', va='top',
+            fontsize=17, color=TXT_MAIN, fontweight='bold')
 
     y = TITLE_H
+    day_names_full = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+
     for d in days:
         date_str = d.strftime('%Y-%m-%d')
         is_today = (d == today)
         is_weekend = d.weekday() >= 5
 
-        day_names = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
-        header_bg = '#1a73e8' if is_today else ('#ede7f6' if is_weekend else '#f1f3f4')
-        ax.add_patch(plt.Rectangle([0, y], WIDTH, DAY_H, facecolor=header_bg, edgecolor='none'))
-
-        txt_color = '#ffffff' if is_today else ('#6a1b9a' if is_weekend else '#202124')
-        label = f"  {day_names[d.weekday()].upper()},  {d.strftime('%d %B')}"
-        ax.text(PAD, y + DAY_H / 2, label, ha='left', va='center',
-                fontsize=14, color=txt_color, fontweight='bold')
+        hdr = HDR_TODAY if is_today else (HDR_WKND if is_weekend else HDR_REG)
+        ax.add_patch(mpatches.FancyBboxPatch(
+            [PAD, y], WIDTH - PAD * 2, DAY_H,
+            boxstyle=f"round,pad=0", facecolor=hdr, edgecolor=BORDER, linewidth=0.8,
+            zorder=1
+        ))
+        day_label = f"{day_names_full[d.weekday()].upper()}  ·  {d.strftime('%d %B')}"
+        ax.text(PAD + 18, y + DAY_H / 2, day_label, ha='left', va='center',
+                fontsize=13, color=TXT_MAIN, fontweight='bold', zorder=2)
 
         y += DAY_H + GAP
         day_tasks = tasks.get(date_str, [])
 
         if not day_tasks:
-            ax.text(PAD + 10, y + LINE_H / 2, 'нет событий', ha='left', va='center',
-                    fontsize=12, color='#bdbdbd', style='italic')
+            ax.text(PAD + 18, y + LINE_H / 2, 'нет событий', ha='left', va='center',
+                    fontsize=11, color=TXT_MUTED, style='italic')
             y += LINE_H
         else:
             for j, task in enumerate(day_tasks):
-                color = PILL_COLORS[j % len(PILL_COLORS)]
+                pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
                 ax.add_patch(mpatches.FancyBboxPatch(
-                    [PAD, y + 4], WIDTH - PAD * 2, LINE_H - 8,
-                    boxstyle="round,pad=3", facecolor=color, edgecolor='none', alpha=0.92
+                    [PAD + 4, y + 5], WIDTH - (PAD + 4) * 2, LINE_H - 10,
+                    boxstyle="round,pad=4", facecolor=pill_bg, edgecolor='none'
                 ))
-                ax.text(PAD + 18, y + LINE_H / 2, task, ha='left', va='center',
-                        fontsize=12, color='#ffffff', fontweight='bold')
+                ax.text(PAD + 22, y + LINE_H / 2, task, ha='left', va='center',
+                        fontsize=12, color=pill_txt, fontweight='bold')
                 y += LINE_H
 
         y += GAP
-        ax.plot([0, WIDTH], [y, y], color='#e0e0e0', linewidth=0.8)
+        ax.plot([PAD, WIDTH - PAD], [y, y], color=BORDER, linewidth=0.8)
+        y += 4
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#ffffff')
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor=BG)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
@@ -524,18 +541,18 @@ def _draw_week(chat_id: int, days: list, today: date) -> bytes:
 def _draw_month(chat_id: int, days: list, today: date) -> bytes:
     tasks = _fetch_tasks(chat_id, days[0], days[-1])
 
-    CELL_W = 180
-    CELL_H = 120
-    PAD_TOP = 70
-    HDR_H = 36
-    COLS = 7
+    CELL_W  = 174
+    CELL_H  = 124
+    PAD_TOP = 72
+    HDR_H   = 34
+    COLS    = 7
     first_wd = days[0].weekday()
-    n_rows = ((first_wd + len(days)) + 6) // 7
-    WIDTH = CELL_W * COLS
-    HEIGHT = PAD_TOP + HDR_H + n_rows * CELL_H + 20
+    n_rows   = ((first_wd + len(days)) + 6) // 7
+    WIDTH    = CELL_W * COLS
+    HEIGHT   = PAD_TOP + HDR_H + n_rows * CELL_H + 24
 
     fig = plt.figure(figsize=(WIDTH / 100, HEIGHT / 100), dpi=150)
-    fig.patch.set_facecolor('#ffffff')
+    fig.patch.set_facecolor(BG)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, WIDTH)
     ax.set_ylim(0, HEIGHT)
@@ -544,12 +561,12 @@ def _draw_month(chat_id: int, days: list, today: date) -> bytes:
 
     m = days[0]
     ax.text(WIDTH / 2, 22, f"{MONTH_NAMES[m.month - 1]}  {m.year}",
-            ha='center', va='top', fontsize=20, color='#202124', fontweight='bold')
+            ha='center', va='top', fontsize=22, color=TXT_MAIN, fontweight='bold')
 
-    for i, dn in enumerate(['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']):
+    for i, dn in enumerate(['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС']):
         cx = i * CELL_W + CELL_W / 2
-        color = '#7e57c2' if i >= 5 else '#5f6368'
-        ax.text(cx, PAD_TOP + 10, dn, ha='center', va='top',
+        color = '#c084fc' if i >= 5 else TXT_MUTED
+        ax.text(cx, PAD_TOP + 8, dn, ha='center', va='top',
                 fontsize=12, color=color, fontweight='bold')
 
     for idx, d in enumerate(days):
@@ -562,38 +579,38 @@ def _draw_month(chat_id: int, days: list, today: date) -> bytes:
         is_today = (d == today)
         is_weekend = d.weekday() >= 5
 
-        bg = '#faf8ff' if is_weekend else '#ffffff'
+        bg = WKND_BG if is_weekend else CARD_BG
         ax.add_patch(plt.Rectangle([cx, cy], CELL_W, CELL_H,
-                                    facecolor=bg, edgecolor='#e0e0e0', linewidth=0.8))
+                                    facecolor=bg, edgecolor=BORDER, linewidth=0.6))
 
         if is_today:
-            ax.add_patch(plt.Circle((cx + 20, cy + 20), 16,
-                                     facecolor='#1a73e8', edgecolor='none', zorder=2))
+            ax.add_patch(plt.Circle((cx + 20, cy + 20), 15,
+                                     facecolor='#c084fc', edgecolor='none', zorder=2))
             ax.text(cx + 20, cy + 20, str(d.day), ha='center', va='center',
-                    fontsize=13, color='#ffffff', fontweight='bold', zorder=3)
+                    fontsize=12, color='#ffffff', fontweight='bold', zorder=3)
         else:
-            nc = '#7e57c2' if is_weekend else '#202124'
+            nc = '#c084fc' if is_weekend else TXT_MAIN
             ax.text(cx + 10, cy + 8, str(d.day), ha='left', va='top',
-                    fontsize=13, color=nc, fontweight='bold')
+                    fontsize=12, color=nc, fontweight='bold')
 
         for j, task in enumerate(tasks.get(date_str, [])[:3]):
-            py = cy + 36 + j * 26
-            color = PILL_COLORS[j % len(PILL_COLORS)]
+            py = cy + 34 + j * 27
+            pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
             ax.add_patch(mpatches.FancyBboxPatch(
                 [cx + 4, py], CELL_W - 8, 22,
-                boxstyle="round,pad=2", facecolor=color, edgecolor='none', alpha=0.9
+                boxstyle="round,pad=2", facecolor=pill_bg, edgecolor='none'
             ))
-            short = task[:18] + '…' if len(task) > 18 else task
+            short = task[:19] + '…' if len(task) > 19 else task
             ax.text(cx + CELL_W / 2, py + 11, short,
-                    ha='center', va='center', fontsize=9, color='#ffffff', fontweight='bold')
+                    ha='center', va='center', fontsize=9, color=pill_txt, fontweight='bold')
 
         extra = len(tasks.get(date_str, [])) - 3
         if extra > 0:
-            ax.text(cx + CELL_W - 6, cy + CELL_H - 6, f'+{extra} ещё',
-                    ha='right', va='bottom', fontsize=8, color='#9e9e9e')
+            ax.text(cx + CELL_W - 6, cy + CELL_H - 6, f'+{extra}',
+                    ha='right', va='bottom', fontsize=8, color=TXT_MUTED)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#ffffff')
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor=BG)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
