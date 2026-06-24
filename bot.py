@@ -173,6 +173,7 @@ async def classify_message(text: str) -> dict:
 • reflection — личные мысли, чувства, наблюдения о себе
 • question — вопрос или просьба об информации (только ответь в response, не сохраняй)
 • update — ИСПРАВЛЕНИЕ или ЗАМЕНА уже существующего пункта («скорректируй», «замени», «исправь», «поменяй», «вместо X сделай Y»)
+• show_month — просьба показать план/календарь на конкретный месяц («план на июль», «следующий месяц», «покажи август», «картинка на июнь»). Поле date = первый день этого месяца в формате YYYY-MM-01
 
 Для типа update:
 • old_text = ключевые слова из старого пункта (что искать в базе)
@@ -230,6 +231,27 @@ async def process_and_save(chat_id: int, text: str, message: Message):
     if items and all(i.get("type") == "question" for i in items):
         await message.answer(response_text)
         return
+
+    # показать месяц
+    for item in items:
+        if item.get("type") == "show_month":
+            if not HAS_MPL:
+                await message.answer("❌ matplotlib не установлен на сервере.")
+                return
+            date_str = item.get("date", "")
+            try:
+                target = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except Exception:
+                target = datetime.now(VN_TZ).date().replace(day=1)
+            target = target.replace(day=1)
+            await bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
+            last_day = calendar.monthrange(target.year, target.month)[1]
+            days = [target + timedelta(days=i) for i in range(last_day)]
+            today = datetime.now(VN_TZ).date()
+            img_bytes = _draw_month(chat_id, days, today)
+            caption = f"🗓 {MONTH_NAMES[target.month - 1]} {target.year}"
+            await message.answer_photo(BufferedInputFile(img_bytes, filename="month.png"), caption=caption)
+            return
 
     icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥", "update": "✏️"}
     conn = db()
