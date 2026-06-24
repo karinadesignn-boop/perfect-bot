@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import asyncpg
 import json
 import calendar
 import io
@@ -10,6 +9,7 @@ import tempfile
 from datetime import datetime, date, timedelta
 
 import pytz
+from supabase import create_client, Client
 
 from groq import AsyncGroq
 try:
@@ -32,13 +32,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN")
-if not DATABASE_URL:
-    raise RuntimeError("Не задан DATABASE_URL")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Не заданы SUPABASE_URL или SUPABASE_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -74,60 +75,36 @@ POLYVAGAL_PRACTICES = [
 
 # ---------- БАЗА ДАННЫХ ----------
 
-_pool: asyncpg.Pool = None
+_sb: Client = None
 
 
-async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL, ssl='require')
-    return _pool
+def get_sb() -> Client:
+    global _sb
+    if _sb is None:
+        _sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _sb
 
 
-async def init_db():
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                chat_id BIGINT PRIMARY KEY,
-                created_at TEXT NOT NULL
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS items (
-                id SERIAL PRIMARY KEY,
-                chat_id BIGINT NOT NULL,
-                text TEXT NOT NULL,
-                type TEXT NOT NULL DEFAULT 'inbox',
-                date TEXT,
-                time TEXT,
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at TEXT NOT NULL
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS routine_log (
-                id SERIAL PRIMARY KEY,
-                chat_id BIGINT NOT NULL,
-                item_id INTEGER NOT NULL,
-                date TEXT NOT NULL,
-                UNIQUE(item_id, date)
-            )
-        """)
+async def _db(func):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, func)
 
 
 async def register_user(chat_id: int):
-    pool = await get_pool()
-    await pool.execute(
-        "INSERT INTO users (chat_id, created_at) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        chat_id, datetime.now().isoformat()
-    )
+    sb = get_sb()
+    try:
+        await _db(lambda: sb.table('users').insert({
+            'chat_id': chat_id,
+            'created_at': datetime.now().isoformat()
+        }).execute())
+    except Exception:
+        pass
 
 
 async def get_all_users() -> list[int]:
-    pool = await get_pool()
-    rows = await pool.fetch("SELECT chat_id FROM users")
-    return [r['chat_id'] for r in rows]
+    sb = get_sb()
+    result = await _db(lambda: sb.table('users').select('chat_id').execute())
+    return [r['chat_id'] for r in result.data]
 
 
 # ---------- КЛАВИАТУРЫ ----------
@@ -255,8 +232,9 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             return
 
     icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥", "update": "✏️"}
-    pool = await get_pool()
+    sb = get_sb()
     saved = []
+
     for item in items:
         msg_type = item.get("type", "inbox")
         if msg_type == "question":
@@ -272,30 +250,35 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             found_id = None
             if search_terms:
                 like_pattern = "%" + "%".join(search_terms[:3]) + "%"
-                row = await pool.fetchrow(
-                    "SELECT id FROM items WHERE chat_id=$1 AND status='active' AND LOWER(text) LIKE $2 "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    chat_id, like_pattern
-                )
-                if row:
-                    found_id = row['id']
+                row = await _db(lambda p=like_pattern: sb.table('items')
+                    .select('id')
+                    .eq('chat_id', chat_id)
+                    .eq('status', 'active')
+                    .ilike('text', p)
+                    .order('created_at', desc=True)
+                    .limit(1)
+                    .execute())
+                if row.data:
+                    found_id = row.data[0]['id']
             if found_id:
-                await pool.execute(
-                    "UPDATE items SET text=$1, date=$2, time=$3 WHERE id=$4",
-                    save_text, item_date, item_time, found_id
-                )
+                await _db(lambda fid=found_id, st=save_text, d=item_date, t=item_time:
+                    sb.table('items').update({'text': st, 'date': d, 'time': t}).eq('id', fid).execute())
                 saved.append("✏️")
             else:
-                await pool.execute(
-                    "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                    chat_id, save_text, "plan", item_date, item_time, 'active', datetime.now().isoformat()
-                )
+                await _db(lambda st=save_text, d=item_date, t=item_time:
+                    sb.table('items').insert({
+                        'chat_id': chat_id, 'text': st, 'type': 'plan',
+                        'date': d, 'time': t, 'status': 'active',
+                        'created_at': datetime.now().isoformat()
+                    }).execute())
                 saved.append("📅")
         else:
-            await pool.execute(
-                "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                chat_id, save_text, msg_type, item_date, item_time, 'active', datetime.now().isoformat()
-            )
+            await _db(lambda st=save_text, mt=msg_type, d=item_date, t=item_time:
+                sb.table('items').insert({
+                    'chat_id': chat_id, 'text': st, 'type': mt,
+                    'date': d, 'time': t, 'status': 'active',
+                    'created_at': datetime.now().isoformat()
+                }).execute())
             saved.append(icons.get(msg_type, "📥"))
 
     if not saved:
@@ -382,70 +365,91 @@ async def help_cmd(message: Message):
 @dp.message(Command("routines"))
 async def routines_cmd(message: Message):
     today = datetime.now(VN_TZ).strftime('%Y-%m-%d')
-    pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT i.*, EXISTS(SELECT 1 FROM routine_log r WHERE r.item_id=i.id AND r.date=$1) as done "
-        "FROM items i WHERE i.chat_id=$2 AND i.type='routine' AND i.status='active' ORDER BY i.id",
-        today, message.chat.id
-    )
+    sb = get_sb()
 
-    if not rows:
+    rows = await _db(lambda: sb.table('items')
+        .select('*')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'routine')
+        .eq('status', 'active')
+        .order('id')
+        .execute())
+
+    if not rows.data:
         await message.answer("Рутин пока нет.\n\nНапиши например: «каждый день медитация 10 минут»")
         return
 
-    for r in rows:
-        icon = "✅" if r['done'] else "⬜️"
-        kb = None if r['done'] else routine_keyboard(r['id'], today)
+    done_rows = await _db(lambda: sb.table('routine_log')
+        .select('item_id')
+        .eq('chat_id', message.chat.id)
+        .eq('date', today)
+        .execute())
+    done_ids = {r['item_id'] for r in done_rows.data}
+
+    for r in rows.data:
+        icon = "✅" if r['id'] in done_ids else "⬜️"
+        kb = None if r['id'] in done_ids else routine_keyboard(r['id'], today)
         await message.answer(f"{icon} {r['text']}", reply_markup=kb)
 
 
 @dp.message(Command("someday"))
 async def someday_cmd(message: Message):
-    pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM items WHERE chat_id=$1 AND type='someday' AND status='active' ORDER BY id DESC LIMIT 20",
-        message.chat.id
-    )
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('*')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'someday')
+        .eq('status', 'active')
+        .order('id', desc=True)
+        .limit(20)
+        .execute())
 
-    if not rows:
+    if not rows.data:
         await message.answer("Список «когда-нибудь» пуст.\n\nНапиши например: «хочу поехать на Бали»")
         return
 
-    for r in rows:
+    for r in rows.data:
         await message.answer(f"🌙 {r['text']}", reply_markup=simple_keyboard(r['id']))
 
 
 @dp.message(Command("inbox"))
 async def inbox_cmd(message: Message):
-    pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM items WHERE chat_id=$1 AND type='inbox' AND status='active' ORDER BY id DESC LIMIT 10",
-        message.chat.id
-    )
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('*')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'inbox')
+        .eq('status', 'active')
+        .order('id', desc=True)
+        .limit(10)
+        .execute())
 
-    if not rows:
+    if not rows.data:
         await message.answer("Инбокс пуст 🎉")
         return
 
-    for r in rows:
+    for r in rows.data:
         await message.answer(f"📥 {r['text']}", reply_markup=simple_keyboard(r['id']))
 
 
 @dp.message(Command("reflections"))
 async def reflections_cmd(message: Message):
-    pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM items WHERE chat_id=$1 AND type='reflection' AND status='active' "
-        "ORDER BY created_at DESC LIMIT 10",
-        message.chat.id
-    )
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('*')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'reflection')
+        .eq('status', 'active')
+        .order('created_at', desc=True)
+        .limit(10)
+        .execute())
 
-    if not rows:
+    if not rows.data:
         await message.answer("Дневник пуст.\n\nПоделись наблюдением о себе — напиши или запиши голосовое 🎤")
         return
 
     await message.answer("*Последние записи:*", parse_mode="Markdown")
-    for r in rows:
+    for r in rows.data:
         dt = datetime.fromisoformat(r['created_at'])
         dt_vn = pytz.utc.localize(dt).astimezone(VN_TZ) if dt.tzinfo is None else dt.astimezone(VN_TZ)
         label = dt_vn.strftime('%d.%m %H:%M')
@@ -456,7 +460,6 @@ async def reflections_cmd(message: Message):
 
 MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь',
                'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь']
-DAY_NAMES_FULL = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
 
 
 async def generate_plan_image(chat_id: int, mode: str = 'week') -> bytes:
@@ -477,17 +480,23 @@ async def generate_plan_image(chat_id: int, mode: str = 'week') -> bytes:
 
 
 async def _fetch_tasks(chat_id: int, start: date, end: date) -> dict[str, list[str]]:
-    pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT text, date, time FROM items WHERE chat_id=$1 AND type='plan' AND status='active' "
-        "AND date >= $2 AND date <= $3 ORDER BY date, time",
-        chat_id, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
-    )
-    result: dict[str, list[str]] = {}
-    for r in rows:
+    sb = get_sb()
+    result = await _db(lambda: sb.table('items')
+        .select('text, date, time')
+        .eq('chat_id', chat_id)
+        .eq('type', 'plan')
+        .eq('status', 'active')
+        .gte('date', start.strftime('%Y-%m-%d'))
+        .lte('date', end.strftime('%Y-%m-%d'))
+        .order('date')
+        .order('time')
+        .execute())
+
+    tasks: dict[str, list[str]] = {}
+    for r in result.data:
         label = f"{r['time']}  {r['text']}" if r['time'] else r['text']
-        result.setdefault(r['date'], []).append(label)
-    return result
+        tasks.setdefault(r['date'], []).append(label)
+    return tasks
 
 
 # пастельная палитра
@@ -514,13 +523,12 @@ PASTEL_PILLS = [
 
 
 def _draw_week(tasks: dict, days: list, today: date) -> bytes:
-    WIDTH = 860
-    PAD   = 28
+    WIDTH   = 860
+    PAD     = 28
     TITLE_H = 54
     DAY_H   = 52
     LINE_H  = 42
     GAP     = 8
-    R       = 10
 
     total_h = TITLE_H
     for d in days:
@@ -551,8 +559,7 @@ def _draw_week(tasks: dict, days: list, today: date) -> bytes:
         hdr = HDR_TODAY if is_today else (HDR_WKND if is_weekend else HDR_REG)
         ax.add_patch(mpatches.FancyBboxPatch(
             [PAD, y], WIDTH - PAD * 2, DAY_H,
-            boxstyle=f"round,pad=0", facecolor=hdr, edgecolor=BORDER, linewidth=0.8,
-            zorder=1
+            boxstyle="round,pad=0", facecolor=hdr, edgecolor=BORDER, linewidth=0.8, zorder=1
         ))
         day_label = f"{day_names_full[d.weekday()].upper()}  ·  {d.strftime('%d %B')}"
         ax.text(PAD + 18, y + DAY_H / 2, day_label, ha='left', va='center',
@@ -665,19 +672,23 @@ def _draw_month(tasks: dict, days: list, today: date) -> bytes:
 
 @dp.message(Command("plan_list"))
 async def plan_list_cmd(message: Message):
-    pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM items WHERE chat_id=$1 AND type='plan' AND status='active' "
-        "ORDER BY date, time LIMIT 30",
-        message.chat.id
-    )
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('*')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'plan')
+        .eq('status', 'active')
+        .order('date')
+        .order('time')
+        .limit(30)
+        .execute())
 
-    if not rows:
+    if not rows.data:
         await message.answer("Планов нет 🎉")
         return
 
     await message.answer("📋 Все активные планы (нажми 🗑 чтобы удалить):")
-    for r in rows:
+    for r in rows.data:
         date_str = f"📅 {r['date']}" if r['date'] else "📅 без даты"
         time_str = f"  {r['time']}" if r['time'] else ""
         label = f"{date_str}{time_str}\n{r['text']}"
@@ -687,7 +698,7 @@ async def plan_list_cmd(message: Message):
 @dp.message(Command("plans"))
 async def plans_cmd(message: Message):
     if not HAS_MPL:
-        await message.answer("❌ matplotlib не установлен на сервере. Напиши администратору.")
+        await message.answer("❌ matplotlib не установлен на сервере.")
         return
     await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
     try:
@@ -701,7 +712,7 @@ async def plans_cmd(message: Message):
 @dp.message(Command("month"))
 async def month_cmd(message: Message):
     if not HAS_MPL:
-        await message.answer("❌ matplotlib не установлен на сервере. Напиши администратору.")
+        await message.answer("❌ matplotlib не установлен на сервере.")
         return
     await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
     try:
@@ -721,11 +732,15 @@ async def month_cmd(message: Message):
 @dp.callback_query(F.data.startswith("done_routine:"))
 async def done_routine(callback: CallbackQuery):
     _, item_id, today = callback.data.split(":")
-    pool = await get_pool()
-    await pool.execute(
-        "INSERT INTO routine_log (chat_id, item_id, date) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
-        callback.message.chat.id, int(item_id), today
-    )
+    sb = get_sb()
+    try:
+        await _db(lambda: sb.table('routine_log').insert({
+            'chat_id': callback.message.chat.id,
+            'item_id': int(item_id),
+            'date': today
+        }).execute())
+    except Exception:
+        pass
     await callback.message.edit_text("✅ " + callback.message.text)
     await callback.answer("Отмечено!")
 
@@ -733,8 +748,8 @@ async def done_routine(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("done_plan:"))
 async def done_plan(callback: CallbackQuery):
     item_id = int(callback.data.split(":")[1])
-    pool = await get_pool()
-    await pool.execute("UPDATE items SET status='done' WHERE id=$1", item_id)
+    sb = get_sb()
+    await _db(lambda: sb.table('items').update({'status': 'done'}).eq('id', item_id).execute())
     await callback.message.edit_text("✅ " + callback.message.text)
     await callback.answer("Готово!")
 
@@ -742,8 +757,8 @@ async def done_plan(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("delete:"))
 async def delete_item(callback: CallbackQuery):
     item_id = int(callback.data.split(":")[1])
-    pool = await get_pool()
-    await pool.execute("DELETE FROM items WHERE id=$1", item_id)
+    sb = get_sb()
+    await _db(lambda: sb.table('items').delete().eq('id', item_id).execute())
     await callback.message.edit_text("🗑 " + callback.message.text)
     await callback.answer("Удалено")
 
@@ -764,15 +779,25 @@ async def send_evening_plan(chat_id: int):
     tomorrow_str = tomorrow.strftime('%Y-%m-%d')
     tomorrow_display = tomorrow.strftime('%d.%m.%Y')
 
-    pool = await get_pool()
-    plans = await pool.fetch(
-        "SELECT * FROM items WHERE chat_id=$1 AND type='plan' AND date=$2 AND status='active' ORDER BY time",
-        chat_id, tomorrow_str
-    )
-    routines = await pool.fetch(
-        "SELECT * FROM items WHERE chat_id=$1 AND type='routine' AND status='active' ORDER BY id",
-        chat_id
-    )
+    sb = get_sb()
+    plans_res = await _db(lambda: sb.table('items')
+        .select('*')
+        .eq('chat_id', chat_id)
+        .eq('type', 'plan')
+        .eq('date', tomorrow_str)
+        .eq('status', 'active')
+        .order('time')
+        .execute())
+    routines_res = await _db(lambda: sb.table('items')
+        .select('*')
+        .eq('chat_id', chat_id)
+        .eq('type', 'routine')
+        .eq('status', 'active')
+        .order('id')
+        .execute())
+
+    plans = plans_res.data
+    routines = routines_res.data
 
     text = f"🌙 *План на завтра — {tomorrow_display}*\n\n"
 
@@ -848,14 +873,17 @@ async def scheduler_loop():
 
         plan_key = f"plan:{vn_date}:{vn_hhmm}"
         if plan_key not in sent_plans:
-            pool = await get_pool()
-            due = await pool.fetch(
-                "SELECT * FROM items WHERE type='plan' AND status='active' AND date=$1 AND time=$2",
-                vn_date, vn_hhmm
-            )
-            if due:
+            sb = get_sb()
+            due = await _db(lambda: sb.table('items')
+                .select('*')
+                .eq('type', 'plan')
+                .eq('status', 'active')
+                .eq('date', vn_date)
+                .eq('time', vn_hhmm)
+                .execute())
+            if due.data:
                 sent_plans.add(plan_key)
-                for p in due:
+                for p in due.data:
                     try:
                         await bot.send_message(
                             p['chat_id'],
@@ -876,7 +904,6 @@ async def scheduler_loop():
 
 
 async def main():
-    await init_db()
     await bot.set_my_commands([
         {"command": "plans",       "description": "📅 План на неделю картинкой"},
         {"command": "month",       "description": "🗓 План на месяц картинкой"},
