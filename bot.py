@@ -880,6 +880,16 @@ async def scheduler_loop():
 
 async def main():
     init_db()
+    await bot.set_my_commands([
+        {"command": "plans",       "description": "📅 План на неделю картинкой"},
+        {"command": "month",       "description": "🗓 План на месяц картинкой"},
+        {"command": "plan_list",   "description": "📋 Список планов (удалить/отметить)"},
+        {"command": "routines",    "description": "🔄 Ежедневные рутины"},
+        {"command": "someday",     "description": "🌙 Список «когда-нибудь»"},
+        {"command": "reflections", "description": "💭 Дневник рефлексий"},
+        {"command": "inbox",       "description": "📥 Необработанные записи"},
+        {"command": "help",        "description": "❓ Как пользоваться"},
+    ])
     asyncio.create_task(scheduler_loop())
     await dp.start_polling(bot)
 
