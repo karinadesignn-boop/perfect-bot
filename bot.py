@@ -153,6 +153,7 @@ async def classify_message(text: str) -> dict:
 • question — вопрос или просьба об информации (только ответь в response, не сохраняй)
 • update — ЛЮБОЕ изменение существующего пункта: перенести дату, изменить время, переформулировать, исправить. Триггеры: «перенеси», «сдвинь», «измени», «поменяй», «скорректируй», «замени», «исправь», «вместо X», «не X а Y», «X теперь Y»
 • delete — УДАЛЕНИЕ существующего пункта. Триггеры: «удали», «убери», «не нужен», «отмени», «убрать», «удалить»
+• show_day — просьба показать план на конкретный день («что на завтра», «план на пятницу», «покажи 5 июля», «что у меня в среду», «картинка на сегодня»). Поле date = дата этого дня в формате YYYY-MM-DD
 • show_month — просьба показать план/календарь на конкретный месяц («план на июль», «следующий месяц», «покажи август», «картинка на июнь»). Поле date = первый день этого месяца в формате YYYY-MM-01
 
 Для типа update — заполняй поля так:
@@ -222,6 +223,23 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         return
 
     for item in items:
+        if item.get("type") == "show_day":
+            if not HAS_MPL:
+                await message.answer("❌ matplotlib не установлен на сервере.")
+                return
+            date_str = item.get("date", "")
+            try:
+                target = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except Exception:
+                target = datetime.now(VN_TZ).date()
+            await bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
+            today = datetime.now(VN_TZ).date()
+            img_bytes = await _draw_day(chat_id, target, today)
+            day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+            caption = f"📅 {day_names[target.weekday()]}, {target.strftime('%d %B %Y')}"
+            await message.answer_photo(BufferedInputFile(img_bytes, filename="day.png"), caption=caption)
+            return
+
         if item.get("type") == "show_month":
             if not HAS_MPL:
                 await message.answer("❌ matplotlib не установлен на сервере.")
@@ -555,6 +573,102 @@ PASTEL_PILLS = [
     ('#d4f5e9', '#155e3c'),
     ('#ede9fe', '#4c1d95'),
 ]
+
+
+async def _draw_day(chat_id: int, target: date, today: date) -> bytes:
+    sb = get_sb()
+    date_str = target.strftime('%Y-%m-%d')
+
+    plans = await _db(lambda: sb.table('items')
+        .select('text, time')
+        .eq('chat_id', chat_id)
+        .eq('type', 'plan')
+        .eq('status', 'active')
+        .eq('date', date_str)
+        .order('time')
+        .execute())
+
+    routines = await _db(lambda: sb.table('items')
+        .select('text')
+        .eq('chat_id', chat_id)
+        .eq('type', 'routine')
+        .eq('status', 'active')
+        .order('id')
+        .execute())
+
+    WIDTH   = 860
+    PAD     = 28
+    TITLE_H = 64
+    DAY_H   = 56
+    LINE_H  = 42
+    GAP     = 8
+
+    items_to_draw = []
+    if routines.data:
+        items_to_draw.append(('routine', None, '🔄 Рутины'))
+        for r in routines.data:
+            items_to_draw.append(('routine_item', None, r['text']))
+    if plans.data:
+        items_to_draw.append(('section', None, '📅 Планы'))
+        for p in plans.data:
+            items_to_draw.append(('plan_item', p['time'], p['text']))
+    if not items_to_draw:
+        items_to_draw.append(('empty', None, 'Ничего не запланировано ✨'))
+
+    total_h = TITLE_H + DAY_H + len([i for i in items_to_draw if i[0].endswith('_item') or i[0] == 'empty']) * LINE_H + PAD
+    total_h += sum(GAP for i in items_to_draw if not i[0].endswith('_item') and i[0] != 'empty') * 2
+
+    fig = plt.figure(figsize=(WIDTH / 100, total_h / 100), dpi=150)
+    fig.patch.set_facecolor(BG)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, WIDTH)
+    ax.set_ylim(0, total_h)
+    ax.invert_yaxis()
+    ax.axis('off')
+
+    day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+    is_today = (target == today)
+    title = f"{'Сегодня — ' if is_today else ''}{day_names[target.weekday()]}, {target.strftime('%d %B %Y')}"
+    ax.text(WIDTH / 2, 16, title, ha='center', va='top',
+            fontsize=17, color=TXT_MAIN, fontweight='bold')
+
+    is_weekend = target.weekday() >= 5
+    hdr = HDR_TODAY if is_today else (HDR_WKND if is_weekend else HDR_REG)
+    ax.add_patch(mpatches.FancyBboxPatch(
+        [PAD, 46], WIDTH - PAD * 2, DAY_H,
+        boxstyle="round,pad=0", facecolor=hdr, edgecolor=BORDER, linewidth=0.8, zorder=1
+    ))
+    ax.text(PAD + 18, 46 + DAY_H / 2, title, ha='left', va='center',
+            fontsize=14, color=TXT_MAIN, fontweight='bold', zorder=2)
+
+    y = TITLE_H + DAY_H + GAP
+    pill_idx = 0
+    for kind, time_val, text in items_to_draw:
+        if kind in ('routine', 'section'):
+            ax.text(PAD + 8, y + 10, text, ha='left', va='top',
+                    fontsize=11, color=TXT_MUTED, fontweight='bold')
+            y += 28
+        elif kind in ('routine_item', 'plan_item'):
+            pill_bg, pill_txt = PASTEL_PILLS[pill_idx % len(PASTEL_PILLS)]
+            ax.add_patch(mpatches.FancyBboxPatch(
+                [PAD + 4, y + 5], WIDTH - (PAD + 4) * 2, LINE_H - 10,
+                boxstyle="round,pad=4", facecolor=pill_bg, edgecolor='none'
+            ))
+            label = f"{time_val}  {text}" if time_val else text
+            ax.text(PAD + 22, y + LINE_H / 2, label, ha='left', va='center',
+                    fontsize=12, color=pill_txt, fontweight='bold')
+            y += LINE_H
+            pill_idx += 1
+        elif kind == 'empty':
+            ax.text(WIDTH / 2, y + LINE_H / 2, text, ha='center', va='center',
+                    fontsize=13, color=TXT_MUTED, style='italic')
+            y += LINE_H
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor=BG)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def _draw_week(tasks: dict, days: list, today: date) -> bytes:
