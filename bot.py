@@ -4,8 +4,7 @@ import os
 import sqlite3
 from datetime import datetime
 
-from google import genai
-from google.genai import types as genai_types
+from groq import AsyncGroq
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatAction
@@ -20,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "data.db")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN. Добавь переменную окружения BOT_TOKEN с токеном от @BotFather.")
@@ -28,7 +27,7 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 conversation_histories: dict[int, list[dict]] = {}
 
@@ -315,41 +314,36 @@ async def delete_item(callback: CallbackQuery):
 async def get_ai_response(chat_id: int, user_message: str) -> str:
     history = conversation_histories.get(chat_id, [])
 
-    contents = [
-        genai_types.Content(role=m["role"], parts=[genai_types.Part(text=m["text"])])
-        for m in history[-20:]
+    messages = [
+        {"role": "system", "content": "Ты полезный ИИ-ассистент в Telegram боте. Отвечай кратко, по делу и на русском языке."}
     ]
-    contents.append(genai_types.Content(role="user", parts=[genai_types.Part(text=user_message)]))
+    for m in history[-20:]:
+        messages.append({"role": m["role"], "content": m["text"]})
+    messages.append({"role": "user", "content": user_message})
 
-    response = await gemini_client.aio.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=contents,
-        config=genai_types.GenerateContentConfig(
-            system_instruction=(
-                "Ты полезный ИИ-ассистент в Telegram боте. "
-                "Отвечай кратко, по делу и на русском языке."
-            ),
-            max_output_tokens=1024,
-        ),
+    response = await groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=messages,
+        max_tokens=1024,
     )
 
-    assistant_text = response.text
+    assistant_text = response.choices[0].message.content
 
     if chat_id not in conversation_histories:
         conversation_histories[chat_id] = []
 
     conversation_histories[chat_id].append({"role": "user", "text": user_message})
-    conversation_histories[chat_id].append({"role": "model", "text": assistant_text})
+    conversation_histories[chat_id].append({"role": "assistant", "text": assistant_text})
 
     return assistant_text
 
 
 @dp.message(Command("ai"))
 async def ai_command(message: Message, state: FSMContext):
-    if not gemini_client:
+    if not groq_client:
         await message.answer(
             "⚠️ ИИ не настроен.\n"
-            "Добавь переменную окружения GEMINI_API_KEY с ключом от aistudio.google.com"
+            "Добавь переменную окружения GROQ_API_KEY с ключом от console.groq.com"
         )
         return
 
