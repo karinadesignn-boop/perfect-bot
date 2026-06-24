@@ -47,6 +47,10 @@ groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
+# Conversation history per chat: last 8 turns so AI understands "эту", "ту", "её" etc.
+_chat_history: dict[int, list[dict]] = {}
+MAX_HISTORY_TURNS = 8
+
 REFLECTION_QUESTIONS = [
     "✨ Остановись на мгновение. Что сейчас происходит внутри твоего тела — какое послание оно несёт?",
     "🌙 Какая мысль сегодня возвращается к тебе снова и снова, словно пытается достучаться?",
@@ -133,7 +137,7 @@ def simple_keyboard(item_id: int) -> InlineKeyboardMarkup:
 
 # ---------- ИИ-РОУТЕР ----------
 
-async def classify_message(text: str) -> dict:
+async def classify_message(text: str, history: list[dict] | None = None) -> dict:
     now_vn = datetime.now(VN_TZ)
     today_str = now_vn.strftime('%Y-%m-%d')
     weekdays = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']
@@ -182,12 +186,14 @@ async def classify_message(text: str) -> dict:
 
 ОТВЕТ (поле response): одно короткое предложение-подтверждение на русском."""
 
+    messages = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": text})
+
     response = await groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ],
+        messages=messages,
         max_tokens=800,
         response_format={"type": "json_object"},
     )
@@ -201,6 +207,14 @@ async def classify_message(text: str) -> dict:
         return json.loads(content[start:end])
 
 
+def _add_to_history(chat_id: int, user_text: str, bot_reply: str):
+    history = _chat_history.setdefault(chat_id, [])
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": bot_reply})
+    if len(history) > MAX_HISTORY_TURNS * 2:
+        _chat_history[chat_id] = history[-(MAX_HISTORY_TURNS * 2):]
+
+
 async def process_and_save(chat_id: int, text: str, message: Message):
     if not groq_client:
         await message.answer("⚠️ ИИ не настроен. Добавь GROQ_API_KEY.")
@@ -208,8 +222,9 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
     await bot.send_chat_action(chat_id, ChatAction.TYPING)
 
+    history = _chat_history.get(chat_id, [])
     try:
-        result = await classify_message(text)
+        result = await classify_message(text, history)
     except Exception as e:
         logging.error(f"AI classify error: {e}")
         await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
@@ -220,6 +235,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
     if items and all(i.get("type") == "question" for i in items):
         await message.answer(response_text)
+        _add_to_history(chat_id, text, response_text)
         return
 
     for item in items:
@@ -264,7 +280,9 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                         lines.append(f"❤️‍🔥  {t}{p['text']}")
                 elif not routines_res.data:
                     lines.append("✨ день пока чистый — всё возможно")
-                await message.answer("\n".join(lines), parse_mode="Markdown")
+                day_text = "\n".join(lines)
+                await message.answer(day_text, parse_mode="Markdown")
+                _add_to_history(chat_id, text, day_text)
             except Exception as e:
                 logging.error(f"show_day error: {e}")
                 await message.answer(f"❌ Ошибка: {e}")
@@ -288,6 +306,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             img_bytes = _draw_month(tasks, days, today)
             caption = f"🗓 {MONTH_NAMES[target.month - 1]} {target.year}"
             await message.answer_photo(BufferedInputFile(img_bytes, filename="month.png"), caption=caption)
+            _add_to_history(chat_id, text, caption)
             return
 
     icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥", "update": "✏️"}
@@ -366,10 +385,13 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
     if not saved:
         await message.answer(response_text)
+        _add_to_history(chat_id, text, response_text)
         return
 
     icons_line = " ".join(dict.fromkeys(saved))
-    await message.answer(f"{icons_line} {response_text}")
+    final_reply = f"{icons_line} {response_text}"
+    await message.answer(final_reply)
+    _add_to_history(chat_id, text, final_reply)
 
 
 # ---------- ГОЛОСОВЫЕ ----------
