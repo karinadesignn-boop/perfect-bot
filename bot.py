@@ -152,12 +152,16 @@ async def classify_message(text: str) -> dict:
 • reflection — личные мысли, чувства, наблюдения о себе
 • question — вопрос или просьба об информации (только ответь в response, не сохраняй)
 • update — ИСПРАВЛЕНИЕ или ЗАМЕНА уже существующего пункта («скорректируй», «замени», «исправь», «поменяй», «вместо X сделай Y»)
+• delete — УДАЛЕНИЕ существующего пункта («удали», «убери», «удалить», «стёрт», «не нужен больше X»)
 • show_month — просьба показать план/календарь на конкретный месяц («план на июль», «следующий месяц», «покажи август», «картинка на июнь»). Поле date = первый день этого месяца в формате YYYY-MM-01
 
 Для типа update:
 • old_text = ключевые слова из старого пункта (что искать в базе)
 • text = новая версия (грамотно сформулированная)
 • date = дата старого пункта если упоминается
+
+Для типа delete:
+• old_text = ключевые слова из пункта который нужно удалить
 
 ДАТЫ:
 • «завтра» = {tomorrow}
@@ -244,7 +248,24 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         item_date = item.get("date")
         item_time = item.get("time")
 
-        if msg_type == "update":
+        if msg_type == "delete":
+            old_text = item.get("old_text", "")
+            search_terms = [w for w in old_text.lower().split() if len(w) > 2]
+            if search_terms:
+                like_pattern = "%" + "%".join(search_terms[:3]) + "%"
+                row = await _db(lambda p=like_pattern: sb.table('items')
+                    .select('id')
+                    .eq('chat_id', chat_id)
+                    .eq('status', 'active')
+                    .ilike('text', p)
+                    .order('created_at', desc=True)
+                    .limit(1)
+                    .execute())
+                if row.data:
+                    fid = row.data[0]['id']
+                    await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                    saved.append("🗑")
+        elif msg_type == "update":
             old_text = item.get("old_text", "")
             search_terms = [w for w in old_text.lower().split() if len(w) > 2]
             found_id = None
