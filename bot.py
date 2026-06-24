@@ -303,31 +303,30 @@ async def handle_voice(message: Message):
 async def start(message: Message):
     register_user(message.chat.id)
     await message.answer(
-        "✨ Привет, душа моя.\n\n"
-        "Я здесь — твой личный хранитель мыслей и планов.\n"
-        "Пиши мне всё что угодно, в любом виде — разберусь сама куда положить.\n\n"
-        "🌙 /plans — звёздный план на неделю\n"
-        "🌕 /plans месяц — план на весь месяц\n"
-        "🔮 /routines — священные ритуалы дня\n"
-        "🌌 /someday — пространство возможностей\n"
-        "💜 /reflections — дневник души\n"
-        "📥 /inbox — необработанное\n"
-        "🕊️ /help — как со мной говорить"
+        "Привет! 👋 Я твой личный ассистент.\n\n"
+        "Пиши мне всё что угодно — разберусь сама куда положить.\n\n"
+        "📅 /plans — план на неделю картинкой\n"
+        "📅 /plans месяц — план на месяц картинкой\n"
+        "🔄 /routines — ежедневные рутины\n"
+        "🌙 /someday — список «когда-нибудь»\n"
+        "💭 /reflections — дневник рефлексий\n"
+        "📥 /inbox — необработанные записи\n"
+        "/help — как пользоваться"
     )
 
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
     await message.answer(
-        "🌙 Говори со мной свободно — я понимаю:\n\n"
-        "🌙 *Планы:* «встреча в пятницу в 15:00», «сдать до 30-го»\n"
-        "🔮 *Ритуалы дня:* «каждый день медитация», «пить воду утром»\n"
-        "🌌 *Когда-нибудь:* «хочу поехать в Японию», «научиться рисовать»\n"
-        "💜 *Рефлексия:* «сегодня поняла что...», «чувствую тревогу»\n"
-        "✨ *Вопрос:* любой вопрос — просто отвечу\n\n"
+        "Пиши мне в свободной форме:\n\n"
+        "📅 *Планы:* «встреча в пятницу в 15:00», «сдать отчёт 30-го»\n"
+        "🔄 *Рутины:* «каждый день медитация», «пить воду утром»\n"
+        "🌙 *Когда-нибудь:* «хочу поехать в Японию»\n"
+        "💭 *Рефлексия:* «сегодня поняла что...», «чувствую тревогу»\n"
+        "💬 *Вопрос:* любой вопрос — просто отвечу\n\n"
         "Голосовые тоже принимаю 🎤\n\n"
-        "Каждый вечер в 22:00 — свиток твоего завтра.\n"
-        "Каждые 3 часа — зов к себе: вопрос или практика.",
+        "Каждый вечер в 22:00 — план на завтра.\n"
+        "Каждые 3 часа — вопрос для рефлексии или практика.",
         parse_mode="Markdown"
     )
 
@@ -352,31 +351,6 @@ async def routines_cmd(message: Message):
         kb = None if r['done'] else routine_keyboard(r['id'], today)
         await message.answer(f"{icon} {r['text']}", reply_markup=kb)
 
-
-@dp.message(Command("plans"))
-async def plans_cmd(message: Message):
-    today = datetime.now(VN_TZ).strftime('%Y-%m-%d')
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM items WHERE chat_id=? AND type='plan' AND status='active' "
-        "AND (date >= ? OR date IS NULL) ORDER BY date, time LIMIT 20",
-        (message.chat.id, today)
-    ).fetchall()
-    conn.close()
-
-    if not rows:
-        await message.answer("Планов пока нет.\n\nНапиши например: «встреча в пятницу в 15:00»")
-        return
-
-    for r in rows:
-        parts = []
-        if r['date']:
-            parts.append(f"📆 {r['date']}")
-        if r['time']:
-            parts.append(f"🕐 {r['time']}")
-        header = "  ".join(parts)
-        text = f"{header}\n{r['text']}" if header else r['text']
-        await message.answer(f"📅 {text}", reply_markup=plan_keyboard(r['id']))
 
 
 @dp.message(Command("someday"))
@@ -655,21 +629,21 @@ async def send_evening_plan(chat_id: int):
     ).fetchall()
     conn.close()
 
-    text = f"🌙 *Свиток завтрашнего дня*\n_{tomorrow_display}_\n\n"
+    text = f"🌙 *План на завтра — {tomorrow_display}*\n\n"
 
     if routines:
-        text += "🔮 *Священные ритуалы:*\n"
+        text += "🔄 *Рутины:*\n"
         for r in routines:
-            text += f"◇ {r['text']}\n"
+            text += f"⬜️ {r['text']}\n"
         text += "\n"
 
     if plans:
-        text += "✨ *Вписано в план:*\n"
+        text += "📅 *Запланировано:*\n"
         for p in plans:
             time_str = f"{p['time']}  " if p['time'] else ""
             text += f"• {time_str}{p['text']}\n"
     elif not routines:
-        text += "Завтра — чистое пространство. Всё возможно ✨"
+        text += "Ничего не запланировано. Завтра — чистый лист ✨"
 
     await bot.send_message(chat_id, text, parse_mode="Markdown")
 
@@ -681,14 +655,14 @@ async def send_reflection_prompt(chat_id: int):
         question = random.choice(REFLECTION_QUESTIONS)
         await bot.send_message(
             chat_id,
-            f"🔮 *Зов к себе*\n\n{question}\n\n_Ответь текстом или голосовым — запишу в дневник души._",
+            f"💭 *Минута для себя:*\n\n{question}\n\n_Можешь ответить текстом или голосовым._",
             parse_mode="Markdown"
         )
     else:
         practice = random.choice(POLYVAGAL_PRACTICES)
         await bot.send_message(
             chat_id,
-            f"🌿 *Практика для твоей нервной системы:*\n\n{practice}",
+            f"🌿 *Практика для нервной системы:*\n\n{practice}",
             parse_mode="Markdown"
         )
 
