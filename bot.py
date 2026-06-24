@@ -595,11 +595,15 @@ def _draw_week(tasks: dict, days: list, today: date) -> bytes:
 
 
 def _draw_month(tasks: dict, days: list, today: date) -> bytes:
-    CELL_W  = 174
-    CELL_H  = 124
-    PAD_TOP = 72
-    HDR_H   = 34
-    COLS    = 7
+    import textwrap
+
+    CELL_W   = 210
+    CELL_H   = 175
+    PILL_H   = 46
+    PILL_GAP = 6
+    PAD_TOP  = 72
+    HDR_H    = 34
+    COLS     = 7
     first_wd = days[0].weekday()
     n_rows   = ((first_wd + len(days)) + 6) // 7
     WIDTH    = CELL_W * COLS
@@ -647,18 +651,23 @@ def _draw_month(tasks: dict, days: list, today: date) -> bytes:
             ax.text(cx + 10, cy + 8, str(d.day), ha='left', va='top',
                     fontsize=12, color=nc, fontweight='bold')
 
-        for j, task in enumerate(tasks.get(date_str, [])[:3]):
-            py = cy + 34 + j * 27
+        day_tasks = tasks.get(date_str, [])
+        for j, task in enumerate(day_tasks[:3]):
+            py = cy + 36 + j * (PILL_H + PILL_GAP)
+            if py + PILL_H > cy + CELL_H - 4:
+                break
+            lines = textwrap.wrap(task, width=24)[:2]
+            wrapped = '\n'.join(lines)
             pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
             ax.add_patch(mpatches.FancyBboxPatch(
-                [cx + 4, py], CELL_W - 8, 22,
+                [cx + 4, py], CELL_W - 8, PILL_H,
                 boxstyle="round,pad=2", facecolor=pill_bg, edgecolor='none'
             ))
-            short = task[:19] + '…' if len(task) > 19 else task
-            ax.text(cx + CELL_W / 2, py + 11, short,
-                    ha='center', va='center', fontsize=9, color=pill_txt, fontweight='bold')
+            ax.text(cx + CELL_W / 2, py + PILL_H / 2, wrapped,
+                    ha='center', va='center', fontsize=8, color=pill_txt,
+                    fontweight='bold', multialignment='center', linespacing=1.3)
 
-        extra = len(tasks.get(date_str, [])) - 3
+        extra = len(day_tasks) - 3
         if extra > 0:
             ax.text(cx + CELL_W - 6, cy + CELL_H - 6, f'+{extra}',
                     ha='right', va='bottom', fontsize=8, color=TXT_MUTED)
