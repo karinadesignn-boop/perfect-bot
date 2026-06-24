@@ -12,10 +12,15 @@ from datetime import datetime, date, timedelta
 import pytz
 
 from groq import AsyncGroq
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    HAS_MPL = True
+except ImportError:
+    HAS_MPL = False
+    logging.warning("matplotlib not installed — image generation disabled")
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatAction
@@ -615,31 +620,34 @@ def _draw_month(chat_id: int, days: list, today: date) -> bytes:
 
 @dp.message(Command("plans"))
 async def plans_cmd(message: Message):
-    args = message.text.replace('/plans', '').strip().lower()
-    mode = 'month' if any(w in args for w in ('month', 'месяц', 'мес')) else 'week'
+    if not HAS_MPL:
+        await message.answer("❌ matplotlib не установлен на сервере. Напиши администратору.")
+        return
     await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
     try:
-        img_bytes = await generate_plan_image(message.chat.id, mode)
-        caption = "📅 План на месяц" if mode == 'month' else "📅 План на неделю"
-        await message.answer_photo(BufferedInputFile(img_bytes, filename="plan.png"), caption=caption)
+        img_bytes = await generate_plan_image(message.chat.id, 'week')
+        await message.answer_photo(BufferedInputFile(img_bytes, filename="plans.png"), caption="📅 План на неделю")
     except Exception as e:
         logging.error(f"Plan image error: {e}")
-        await message.answer("❌ Не смогла сгенерировать план.")
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("month"))
 async def month_cmd(message: Message):
+    if not HAS_MPL:
+        await message.answer("❌ matplotlib не установлен на сервере. Напиши администратору.")
+        return
     await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
     try:
         img_bytes = await generate_plan_image(message.chat.id, 'month')
         now_vn = datetime.now(VN_TZ)
         await message.answer_photo(
             BufferedInputFile(img_bytes, filename="month.png"),
-            caption=f"📅 {MONTH_NAMES[now_vn.month - 1]} {now_vn.year}"
+            caption=f"🗓 {MONTH_NAMES[now_vn.month - 1]} {now_vn.year}"
         )
     except Exception as e:
         logging.error(f"Month image error: {e}")
-        await message.answer("❌ Не смогла сгенерировать календарь.")
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 # ---------- КОЛБЭКИ ----------
