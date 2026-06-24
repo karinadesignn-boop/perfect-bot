@@ -224,24 +224,50 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
     for item in items:
         if item.get("type") == "show_day":
-            if not HAS_MPL:
-                await message.answer("❌ matplotlib не установлен на сервере.")
-                return
             date_str = item.get("date", "")
             try:
                 target = datetime.strptime(date_str, "%Y-%m-%d").date()
             except Exception:
                 target = datetime.now(VN_TZ).date()
             try:
-                await bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
-                today = datetime.now(VN_TZ).date()
-                img_bytes = await _draw_day(chat_id, target, today)
+                sb = get_sb()
+                _ds = target.strftime('%Y-%m-%d')
+                plans_res = await _db(lambda: sb.table('items')
+                    .select('text, time')
+                    .eq('chat_id', chat_id)
+                    .eq('type', 'plan')
+                    .eq('status', 'active')
+                    .eq('date', _ds)
+                    .order('time')
+                    .execute())
+                routines_res = await _db(lambda: sb.table('items')
+                    .select('text')
+                    .eq('chat_id', chat_id)
+                    .eq('type', 'routine')
+                    .eq('status', 'active')
+                    .order('id')
+                    .execute())
                 day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
-                caption = f"📅 {day_names[target.weekday()]}, {target.strftime('%d %B %Y')}"
-                await message.answer_photo(BufferedInputFile(img_bytes, filename="day.png"), caption=caption)
+                today_vn = datetime.now(VN_TZ).date()
+                diff = (target - today_vn).days
+                prefix = "Сегодня — " if diff == 0 else ("Завтра — " if diff == 1 else "")
+                lines = [f"📅 *{prefix}{day_names[target.weekday()]}, {target.strftime('%d.%m.%Y')}*", ""]
+                if routines_res.data:
+                    lines.append("🔄 *Рутины:*")
+                    for r in routines_res.data:
+                        lines.append(f"  ⬜️ {r['text']}")
+                    lines.append("")
+                if plans_res.data:
+                    lines.append("📌 *Планы:*")
+                    for p in plans_res.data:
+                        t = f"`{p['time']}`  " if p['time'] else ""
+                        lines.append(f"  • {t}{p['text']}")
+                elif not routines_res.data:
+                    lines.append("Ничего не запланировано ✨")
+                await message.answer("\n".join(lines), parse_mode="Markdown")
             except Exception as e:
                 logging.error(f"show_day error: {e}")
-                await message.answer(f"❌ Ошибка при создании картинки: {e}")
+                await message.answer(f"❌ Ошибка: {e}")
             return
 
         if item.get("type") == "show_month":
@@ -727,13 +753,13 @@ def _draw_week(tasks: dict, days: list, today: date) -> bytes:
             y += LINE_H
         else:
             for j, task in enumerate(day_tasks):
-                pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
+                _, pill_color = PASTEL_PILLS[j % len(PASTEL_PILLS)]
                 ax.add_patch(mpatches.FancyBboxPatch(
                     [PAD + 4, y + 5], WIDTH - (PAD + 4) * 2, LINE_H - 10,
-                    boxstyle="round,pad=4", facecolor=pill_bg, edgecolor='none'
+                    boxstyle="round,pad=4", facecolor='none', edgecolor=pill_color, linewidth=1.2
                 ))
                 ax.text(PAD + 22, y + LINE_H / 2, task, ha='left', va='center',
-                        fontsize=12, color=pill_txt, fontweight='bold')
+                        fontsize=12, color=TXT_MAIN)
                 y += LINE_H
 
         y += GAP
@@ -837,15 +863,15 @@ def _draw_month(tasks: dict, days: list, today: date) -> bytes:
                 ty = cy + HDR_H
                 for j, lines in enumerate(day_lines[date_str]):
                     pill_h = len(lines) * LINE_H
-                    pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
+                    _, pill_color = PASTEL_PILLS[j % len(PASTEL_PILLS)]
                     ax.add_patch(mpatches.FancyBboxPatch(
                         [cx + 3, ty], CELL_W - 6, pill_h,
-                        boxstyle="round,pad=1", facecolor=pill_bg, edgecolor='none'
+                        boxstyle="round,pad=1", facecolor='none', edgecolor=pill_color, linewidth=0.8
                     ))
                     for k, line in enumerate(lines):
                         ax.text(cx + CELL_W / 2, ty + k * LINE_H + LINE_H / 2, line,
                                 ha='center', va='center', fontsize=7.5,
-                                color=pill_txt, fontweight='bold')
+                                color=TXT_MAIN)
                     ty += pill_h + PILL_GAP
 
         row_y += rh
