@@ -250,20 +250,20 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
                 today_vn = datetime.now(VN_TZ).date()
                 diff = (target - today_vn).days
-                prefix = "Сегодня — " if diff == 0 else ("Завтра — " if diff == 1 else "")
-                lines = [f"📅 *{prefix}{day_names[target.weekday()]}, {target.strftime('%d.%m.%Y')}*", ""]
+                prefix = "сегодня — " if diff == 0 else ("завтра — " if diff == 1 else "")
+                lines = [f"🔮 *{prefix}{day_names[target.weekday()]}, {target.strftime('%d.%m.%Y')}*", ""]
                 if routines_res.data:
-                    lines.append("🔄 *Рутины:*")
+                    lines.append("🐈‍⬛ *ритуалы дня*")
                     for r in routines_res.data:
-                        lines.append(f"  ⬜️ {r['text']}")
+                        lines.append(f"🧿  {r['text']}")
                     lines.append("")
                 if plans_res.data:
-                    lines.append("📌 *Планы:*")
+                    lines.append("🌙 *планы*")
                     for p in plans_res.data:
                         t = f"`{p['time']}`  " if p['time'] else ""
-                        lines.append(f"  • {t}{p['text']}")
+                        lines.append(f"❤️‍🔥  {t}{p['text']}")
                 elif not routines_res.data:
-                    lines.append("Ничего не запланировано ✨")
+                    lines.append("✨ день пока чистый — всё возможно")
                 await message.answer("\n".join(lines), parse_mode="Markdown")
             except Exception as e:
                 logging.error(f"show_day error: {e}")
