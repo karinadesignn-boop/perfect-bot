@@ -1031,63 +1031,83 @@ async def scheduler_loop():
     sent_reflection: set[str] = set()
     sent_plans: set[str] = set()
 
-    REFLECTION_UTC = {'02:00', '05:00', '08:00', '11:00'}
+    # VN hours (UTC+7): 9, 12, 15, 18
+    REFLECTION_HOURS_VN = {9, 12, 15, 18}
 
     while True:
-        now_utc = datetime.utcnow()
-        now_vn = datetime.now(VN_TZ)
-        utc_hhmm = now_utc.strftime('%H:%M')
-        vn_date = now_vn.strftime('%Y-%m-%d')
-        vn_hhmm = now_vn.strftime('%H:%M')
+        try:
+            now_vn = datetime.now(VN_TZ)
+            vn_date = now_vn.strftime('%Y-%m-%d')
+            vn_hour = now_vn.hour
+            vn_hhmm = now_vn.strftime('%H:%M')
 
-        evening_key = f"evening:{vn_date}"
-        if utc_hhmm == '15:00' and evening_key not in sent_evening:
-            sent_evening.add(evening_key)
-            for chat_id in await get_all_users():
-                try:
-                    await send_evening_plan(chat_id)
-                except Exception as e:
-                    logging.error(f"Evening plan error {chat_id}: {e}")
-
-        reflection_key = f"reflection:{vn_date}:{utc_hhmm}"
-        if utc_hhmm in REFLECTION_UTC and reflection_key not in sent_reflection:
-            sent_reflection.add(reflection_key)
-            for chat_id in await get_all_users():
-                try:
-                    await send_reflection_prompt(chat_id)
-                except Exception as e:
-                    logging.error(f"Reflection error {chat_id}: {e}")
-
-        plan_key = f"plan:{vn_date}:{vn_hhmm}"
-        if plan_key not in sent_plans:
-            sb = get_sb()
-            due = await _db(lambda: sb.table('items')
-                .select('*')
-                .eq('type', 'plan')
-                .eq('status', 'active')
-                .eq('date', vn_date)
-                .eq('time', vn_hhmm)
-                .execute())
-            if due.data:
-                sent_plans.add(plan_key)
-                for p in due.data:
+            # Evening plan at 22:xx VN
+            evening_key = f"evening:{vn_date}"
+            if vn_hour == 22 and evening_key not in sent_evening:
+                sent_evening.add(evening_key)
+                logging.info(f"Sending evening plan, VN time: {vn_hhmm}")
+                for chat_id in await get_all_users():
                     try:
-                        await bot.send_message(
-                            p['chat_id'],
-                            f"⏰ *{p['time']}* — {p['text']}",
-                            parse_mode="Markdown"
-                        )
+                        await send_evening_plan(chat_id)
                     except Exception as e:
-                        logging.error(f"Plan reminder error: {e}")
+                        logging.error(f"Evening plan error {chat_id}: {e}")
 
-        if len(sent_evening) > 500:
-            sent_evening.clear()
-        if len(sent_reflection) > 500:
-            sent_reflection.clear()
-        if len(sent_plans) > 2000:
-            sent_plans.clear()
+            # Reflection every 3 hours at 9, 12, 15, 18 VN
+            reflection_key = f"reflection:{vn_date}:{vn_hour}"
+            if vn_hour in REFLECTION_HOURS_VN and reflection_key not in sent_reflection:
+                sent_reflection.add(reflection_key)
+                logging.info(f"Sending reflection, VN time: {vn_hhmm}")
+                for chat_id in await get_all_users():
+                    try:
+                        await send_reflection_prompt(chat_id)
+                    except Exception as e:
+                        logging.error(f"Reflection error {chat_id}: {e}")
+
+            # Per-plan reminders at their scheduled time
+            plan_key = f"plan:{vn_date}:{vn_hhmm}"
+            if plan_key not in sent_plans:
+                sb = get_sb()
+                _vn_date = vn_date
+                _vn_hhmm = vn_hhmm
+                due = await _db(lambda: sb.table('items')
+                    .select('*')
+                    .eq('type', 'plan')
+                    .eq('status', 'active')
+                    .eq('date', _vn_date)
+                    .eq('time', _vn_hhmm)
+                    .execute())
+                if due.data:
+                    sent_plans.add(plan_key)
+                    for p in due.data:
+                        try:
+                            await bot.send_message(
+                                p['chat_id'],
+                                f"⏰ *{p['time']}* — {p['text']}",
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logging.error(f"Plan reminder error: {e}")
+
+            if len(sent_evening) > 500:
+                sent_evening.clear()
+            if len(sent_reflection) > 500:
+                sent_reflection.clear()
+            if len(sent_plans) > 2000:
+                sent_plans.clear()
+
+        except Exception as e:
+            logging.error(f"Scheduler loop error: {e}")
 
         await asyncio.sleep(60)
+
+
+async def scheduler_wrapper():
+    while True:
+        try:
+            await scheduler_loop()
+        except Exception as e:
+            logging.error(f"Scheduler crashed, restarting in 60s: {e}")
+            await asyncio.sleep(60)
 
 
 async def main():
@@ -1101,7 +1121,7 @@ async def main():
         {"command": "inbox",       "description": "📥 Необработанные записи"},
         {"command": "help",        "description": "❓ Как пользоваться"},
     ])
-    asyncio.create_task(scheduler_loop())
+    asyncio.create_task(scheduler_wrapper())
     await dp.start_polling(bot)
 
 
