@@ -425,95 +425,136 @@ async def reflections_cmd(message: Message):
         await message.answer(f"💭 _{label}_\n{r['text']}", parse_mode="Markdown")
 
 
-# ---------- КАЛЕНДАРЬ МЕСЯЦА ----------
+# ---------- КАРТИНКИ-ПЛАННЕРЫ ----------
 
-async def generate_month_image(chat_id: int, year: int, month: int) -> bytes:
+MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь',
+               'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь']
+DAY_NAMES_FULL = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+
+
+async def generate_plan_image(chat_id: int, mode: str = 'week') -> bytes:
+    now_vn = datetime.now(VN_TZ)
+    today = now_vn.date()
+
+    if mode == 'week':
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=6)
+        title = f"Неделя  {start.strftime('%d')}–{end.strftime('%d %B %Y')}"
+    else:
+        start = date(today.year, today.month, 1)
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        end = date(today.year, today.month, last_day)
+        title = f"{MONTH_NAMES[today.month - 1]}  {today.year}"
+
     conn = db()
     rows = conn.execute(
-        "SELECT text, date, time FROM items WHERE chat_id=? AND type='plan' "
-        "AND date LIKE ? AND status='active' ORDER BY date, time",
-        (chat_id, f"{year:04d}-{month:02d}-%")
+        "SELECT text, date, time FROM items WHERE chat_id=? AND type='plan' AND status='active' "
+        "AND date >= ? AND date <= ? ORDER BY date, time",
+        (chat_id, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
     ).fetchall()
     conn.close()
 
     tasks_by_date: dict[str, list[str]] = {}
     for r in rows:
         d = r['date']
-        label = f"{r['time']} {r['text']}" if r['time'] else r['text']
+        label = f"{r['time']}  {r['text']}" if r['time'] else r['text']
         tasks_by_date.setdefault(d, []).append(label)
 
-    cal = calendar.monthcalendar(year, month)
-    month_names = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-                   'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
-    n_weeks = len(cal)
+    all_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
 
-    fig, ax = plt.subplots(figsize=(14, n_weeks * 2 + 1.5))
+    LINE_H = 30
+    HEADER_H = 48
+    TITLE_H = 70
+    PAD = 30
+    WIDTH = 900
+
+    total_h = TITLE_H + PAD
+    for d in all_days:
+        tasks = tasks_by_date.get(d.strftime('%Y-%m-%d'), [])
+        total_h += HEADER_H + max(len(tasks), 1) * LINE_H + 14
+    total_h += PAD
+
+    HEIGHT = max(500, total_h)
+
+    fig = plt.figure(figsize=(WIDTH / 100, HEIGHT / 100), dpi=100)
     fig.patch.set_facecolor('#0d1117')
-    ax.set_facecolor('#0d1117')
-    ax.set_xlim(0, 7)
-    ax.set_ylim(0, n_weeks + 1)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, WIDTH)
+    ax.set_ylim(0, HEIGHT)
+    ax.invert_yaxis()
     ax.axis('off')
 
-    ax.text(3.5, n_weeks + 0.75, f'{month_names[month - 1]} {year}',
-            ha='center', va='center', fontsize=15, color='#c9d1d9', fontweight='bold')
+    y = PAD
+    ax.text(WIDTH / 2, y, title, ha='center', va='top',
+            fontsize=22, color='#c9d1d9', fontweight='bold')
+    y += TITLE_H - 10
+    ax.plot([40, WIDTH - 40], [y, y], color='#30363d', linewidth=1)
+    y += 18
 
-    day_names = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
-    for i, dn in enumerate(day_names):
-        color = '#ff7b7b' if i >= 5 else '#8b9dc3'
-        ax.text(i + 0.5, n_weeks + 0.3, dn, ha='center', va='center',
-                fontsize=11, color=color, fontweight='bold')
+    for d in all_days:
+        date_str = d.strftime('%Y-%m-%d')
+        wd = d.weekday()
+        is_today = (d == today)
+        is_weekend = wd >= 5
 
-    today_vn = datetime.now(VN_TZ).date()
-
-    for week_idx, week in enumerate(cal):
-        for day_idx, day in enumerate(week):
-            if day == 0:
-                continue
-            x = day_idx
-            y = n_weeks - week_idx - 1
-            date_str = f"{year:04d}-{month:02d}-{day:02d}"
-            is_today = (date(year, month, day) == today_vn)
-            is_weekend = day_idx >= 5
-
-            bg = '#1c2b4a' if is_today else ('#1a1a1a' if is_weekend else '#161b22')
-            border = '#4f9eff' if is_today else '#30363d'
+        if is_today:
             rect = mpatches.FancyBboxPatch(
-                [x + 0.04, y + 0.04], 0.92, 0.92,
-                boxstyle="round,pad=0.03",
-                facecolor=bg, edgecolor=border, linewidth=1.5 if is_today else 0.5
+                [30, y - 4], WIDTH - 60, HEADER_H,
+                boxstyle="round,pad=3", facecolor='#1c2b4a', edgecolor='#2d4a7a', linewidth=1
             )
             ax.add_patch(rect)
 
-            day_color = '#4f9eff' if is_today else ('#ff7b7b' if is_weekend else '#c9d1d9')
-            ax.text(x + 0.12, y + 0.82, str(day), ha='left', va='top',
-                    fontsize=10, color=day_color, fontweight='bold' if is_today else 'normal')
+        day_color = '#4f9eff' if is_today else ('#ff7b7b' if is_weekend else '#e6edf3')
+        prefix = '▶  ' if is_today else ''
+        ax.text(55, y + 8, f"{prefix}{DAY_NAMES_FULL[wd]},  {d.strftime('%d %B')}",
+                ha='left', va='top', fontsize=15, color=day_color, fontweight='bold')
+        y += HEADER_H
 
-            tasks = tasks_by_date.get(date_str, [])
-            for t_idx, task in enumerate(tasks[:3]):
-                short = task[:13] + '…' if len(task) > 13 else task
-                ty = y + 0.62 - t_idx * 0.19
-                ax.text(x + 0.5, ty, short, ha='center', va='top',
-                        fontsize=5.5, color='#58a6ff' if t_idx == 0 else '#79c0ff')
-            if len(tasks) > 3:
-                ax.text(x + 0.5, y + 0.1, f'+{len(tasks) - 3}', ha='center', va='bottom',
-                        fontsize=5, color='#6e7681')
+        tasks = tasks_by_date.get(date_str, [])
+        if not tasks:
+            ax.text(75, y, 'нет дел', ha='left', va='top',
+                    fontsize=12, color='#3d444d', style='italic')
+            y += LINE_H
+        else:
+            for task in tasks:
+                ax.text(68, y, '•', ha='left', va='top', fontsize=14, color='#4f9eff')
+                ax.text(85, y, task, ha='left', va='top', fontsize=12, color='#adbac7')
+                y += LINE_H
+
+        y += 6
+        ax.plot([40, WIDTH - 40], [y, y], color='#21262d', linewidth=0.5)
+        y += 8
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#0d1117')
+    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0d1117')
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
 
 
-@dp.message(Command("month"))
-async def month_cmd(message: Message):
-    now_vn = datetime.now(VN_TZ)
+@dp.message(Command("plans"))
+async def plans_cmd(message: Message):
+    args = message.text.replace('/plans', '').strip().lower()
+    mode = 'month' if any(w in args for w in ('month', 'месяц', 'мес')) else 'week'
     await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
     try:
-        img_bytes = await generate_month_image(message.chat.id, now_vn.year, now_vn.month)
+        img_bytes = await generate_plan_image(message.chat.id, mode)
+        caption = "📅 План на месяц" if mode == 'month' else "📅 План на неделю"
+        await message.answer_photo(BufferedInputFile(img_bytes, filename="plan.png"), caption=caption)
+    except Exception as e:
+        logging.error(f"Plan image error: {e}")
+        await message.answer("❌ Не смогла сгенерировать план.")
+
+
+@dp.message(Command("month"))
+async def month_cmd(message: Message):
+    await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
+    try:
+        img_bytes = await generate_plan_image(message.chat.id, 'month')
+        now_vn = datetime.now(VN_TZ)
         await message.answer_photo(
             BufferedInputFile(img_bytes, filename="month.png"),
-            caption=f"📅 {['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'][now_vn.month-1]} {now_vn.year}"
+            caption=f"📅 {MONTH_NAMES[now_vn.month - 1]} {now_vn.year}"
         )
     except Exception as e:
         logging.error(f"Month image error: {e}")
