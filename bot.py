@@ -161,10 +161,10 @@ async def classify_message(text: str) -> dict:
     weekday_ru = weekdays[now_vn.weekday()]
 
     tomorrow = (now_vn.date() + timedelta(days=1)).strftime('%Y-%m-%d')
-    system_prompt = f"""Ты личный ассистент-органайзер. Сегодня {today_str} ({weekday_ru}), год {now_vn.year}. Пользователь в Вьетнаме UTC+7.
+    system_prompt = f"""Ты личный ассистент-органайзер. Сегодня {today_str} ({weekday_ru}). Пользователь в Вьетнаме UTC+7.
 
 Разбери сообщение на отдельные пункты и верни JSON:
-{{"items":[{{"type":"...","text":"...","date":"...","time":"..."}}],"response":"..."}}
+{{"items":[{{"type":"...","text":"...","date":"...","time":"...","old_text":"..."}}],"response":"..."}}
 
 ТИПЫ — выбирай строго по смыслу:
 • plan — дело привязанное к конкретной дате или времени («встреча в пятницу», «7 июля», «завтра», «сегодня»)
@@ -172,12 +172,18 @@ async def classify_message(text: str) -> dict:
 • someday — мечта или идея БЕЗ конкретной даты («хочу когда-нибудь», «было бы здорово»)
 • reflection — личные мысли, чувства, наблюдения о себе
 • question — вопрос или просьба об информации (только ответь в response, не сохраняй)
+• update — ИСПРАВЛЕНИЕ или ЗАМЕНА уже существующего пункта («скорректируй», «замени», «исправь», «поменяй», «вместо X сделай Y»)
 
-ДАТЫ (используй ТОЛЬКО год {now_vn.year}):
+Для типа update:
+• old_text = ключевые слова из старого пункта (что искать в базе)
+• text = новая версия (грамотно сформулированная)
+• date = дата старого пункта если упоминается
+
+ДАТЫ:
 • «завтра» = {tomorrow}
 • «сегодня» = {today_str}
 • «в пятницу/субботу/...» = ближайший такой день после сегодня
-• числа без года → {now_vn.year} (или следующий год если дата уже прошла)
+• числа без года → текущий год (или следующий если дата уже прошла)
 
 ТЕКСТ (поле text): перепиши грамотно и чисто, исправь все ошибки. Для plan — формулируй как действие с глаголом.
 Примеры: «зап на узи голеностоп» → «Записаться на УЗИ голеностопа» | «психолог 16-18» → «Сеанс у психолога» | «посчитать финансы» → «Подвести финансовый итог месяца»
@@ -225,21 +231,52 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         await message.answer(response_text)
         return
 
-    icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥"}
+    icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥", "update": "✏️"}
     conn = db()
     saved = []
     for item in items:
         msg_type = item.get("type", "inbox")
         if msg_type == "question":
             continue
+
         save_text = item.get("text", text)
         item_date = item.get("date")
         item_time = item.get("time")
-        conn.execute(
-            "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES (?,?,?,?,?,?,?)",
-            (chat_id, save_text, msg_type, item_date, item_time, 'active', datetime.now().isoformat())
-        )
-        saved.append(icons.get(msg_type, "📥"))
+
+        if msg_type == "update":
+            old_text = item.get("old_text", "")
+            # ищем похожий пункт в базе
+            search_terms = [w for w in old_text.lower().split() if len(w) > 2]
+            found_id = None
+            if search_terms:
+                like_pattern = "%" + "%".join(search_terms[:3]) + "%"
+                row = conn.execute(
+                    "SELECT id FROM items WHERE chat_id=? AND status='active' AND LOWER(text) LIKE ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (chat_id, like_pattern)
+                ).fetchone()
+                if row:
+                    found_id = row['id']
+            if found_id:
+                conn.execute(
+                    "UPDATE items SET text=?, date=?, time=? WHERE id=?",
+                    (save_text, item_date, item_time, found_id)
+                )
+                saved.append("✏️")
+            else:
+                # не нашли — создаём новый
+                conn.execute(
+                    "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (chat_id, save_text, "plan", item_date, item_time, 'active', datetime.now().isoformat())
+                )
+                saved.append("📅")
+        else:
+            conn.execute(
+                "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES (?,?,?,?,?,?,?)",
+                (chat_id, save_text, msg_type, item_date, item_time, 'active', datetime.now().isoformat())
+            )
+            saved.append(icons.get(msg_type, "📥"))
+
     conn.commit()
     conn.close()
 
