@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-import sqlite3
+import asyncpg
 import json
 import calendar
 import io
@@ -32,11 +32,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DB_PATH = os.getenv("DB_PATH", "data.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN")
+if not DATABASE_URL:
+    raise RuntimeError("Не задан DATABASE_URL")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -72,59 +74,59 @@ POLYVAGAL_PRACTICES = [
 
 # ---------- БАЗА ДАННЫХ ----------
 
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+_pool: asyncpg.Pool = None
 
 
-def init_db():
-    conn = db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            chat_id INTEGER PRIMARY KEY,
-            created_at TEXT NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            text TEXT NOT NULL,
-            type TEXT NOT NULL DEFAULT 'inbox',
-            date TEXT,
-            time TEXT,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at TEXT NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS routine_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            item_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            UNIQUE(item_id, date)
-        )
-    """)
-    conn.commit()
-    conn.close()
+async def get_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL, ssl='require')
+    return _pool
 
 
-def register_user(chat_id: int):
-    conn = db()
-    conn.execute(
-        "INSERT OR IGNORE INTO users (chat_id, created_at) VALUES (?, ?)",
-        (chat_id, datetime.now().isoformat())
+async def init_db():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                chat_id BIGINT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS items (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                text TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'inbox',
+                date TEXT,
+                time TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS routine_log (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                item_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                UNIQUE(item_id, date)
+            )
+        """)
+
+
+async def register_user(chat_id: int):
+    pool = await get_pool()
+    await pool.execute(
+        "INSERT INTO users (chat_id, created_at) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        chat_id, datetime.now().isoformat()
     )
-    conn.commit()
-    conn.close()
 
 
-def get_all_users() -> list[int]:
-    conn = db()
-    rows = conn.execute("SELECT chat_id FROM users").fetchall()
-    conn.close()
+async def get_all_users() -> list[int]:
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT chat_id FROM users")
     return [r['chat_id'] for r in rows]
 
 
@@ -227,12 +229,10 @@ async def process_and_save(chat_id: int, text: str, message: Message):
     items = result.get("items", [])
     response_text = result.get("response", "Сохранила ✅")
 
-    # только вопрос — ничего не сохраняем
     if items and all(i.get("type") == "question" for i in items):
         await message.answer(response_text)
         return
 
-    # показать месяц
     for item in items:
         if item.get("type") == "show_month":
             if not HAS_MPL:
@@ -248,13 +248,14 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             last_day = calendar.monthrange(target.year, target.month)[1]
             days = [target + timedelta(days=i) for i in range(last_day)]
             today = datetime.now(VN_TZ).date()
-            img_bytes = _draw_month(chat_id, days, today)
+            tasks = await _fetch_tasks(chat_id, days[0], days[-1])
+            img_bytes = _draw_month(tasks, days, today)
             caption = f"🗓 {MONTH_NAMES[target.month - 1]} {target.year}"
             await message.answer_photo(BufferedInputFile(img_bytes, filename="month.png"), caption=caption)
             return
 
     icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥", "update": "✏️"}
-    conn = db()
+    pool = await get_pool()
     saved = []
     for item in items:
         msg_type = item.get("type", "inbox")
@@ -267,40 +268,35 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
         if msg_type == "update":
             old_text = item.get("old_text", "")
-            # ищем похожий пункт в базе
             search_terms = [w for w in old_text.lower().split() if len(w) > 2]
             found_id = None
             if search_terms:
                 like_pattern = "%" + "%".join(search_terms[:3]) + "%"
-                row = conn.execute(
-                    "SELECT id FROM items WHERE chat_id=? AND status='active' AND LOWER(text) LIKE ? "
+                row = await pool.fetchrow(
+                    "SELECT id FROM items WHERE chat_id=$1 AND status='active' AND LOWER(text) LIKE $2 "
                     "ORDER BY created_at DESC LIMIT 1",
-                    (chat_id, like_pattern)
-                ).fetchone()
+                    chat_id, like_pattern
+                )
                 if row:
                     found_id = row['id']
             if found_id:
-                conn.execute(
-                    "UPDATE items SET text=?, date=?, time=? WHERE id=?",
-                    (save_text, item_date, item_time, found_id)
+                await pool.execute(
+                    "UPDATE items SET text=$1, date=$2, time=$3 WHERE id=$4",
+                    save_text, item_date, item_time, found_id
                 )
                 saved.append("✏️")
             else:
-                # не нашли — создаём новый
-                conn.execute(
-                    "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES (?,?,?,?,?,?,?)",
-                    (chat_id, save_text, "plan", item_date, item_time, 'active', datetime.now().isoformat())
+                await pool.execute(
+                    "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    chat_id, save_text, "plan", item_date, item_time, 'active', datetime.now().isoformat()
                 )
                 saved.append("📅")
         else:
-            conn.execute(
-                "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES (?,?,?,?,?,?,?)",
-                (chat_id, save_text, msg_type, item_date, item_time, 'active', datetime.now().isoformat())
+            await pool.execute(
+                "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                chat_id, save_text, msg_type, item_date, item_time, 'active', datetime.now().isoformat()
             )
             saved.append(icons.get(msg_type, "📥"))
-
-    conn.commit()
-    conn.close()
 
     if not saved:
         await message.answer(response_text)
@@ -331,7 +327,7 @@ async def transcribe_voice(file_bytes: bytes) -> str:
 
 @dp.message(F.voice)
 async def handle_voice(message: Message):
-    register_user(message.chat.id)
+    await register_user(message.chat.id)
     if not groq_client:
         await message.answer("⚠️ ИИ не настроен.")
         return
@@ -353,7 +349,7 @@ async def handle_voice(message: Message):
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    register_user(message.chat.id)
+    await register_user(message.chat.id)
     await message.answer(
         "Привет! 👋 Я твой личный ассистент.\n\n"
         "Пиши мне всё что угодно — разберусь сама куда положить.\n\n"
@@ -386,13 +382,12 @@ async def help_cmd(message: Message):
 @dp.message(Command("routines"))
 async def routines_cmd(message: Message):
     today = datetime.now(VN_TZ).strftime('%Y-%m-%d')
-    conn = db()
-    rows = conn.execute(
-        "SELECT i.*, EXISTS(SELECT 1 FROM routine_log r WHERE r.item_id=i.id AND r.date=?) as done "
-        "FROM items i WHERE i.chat_id=? AND i.type='routine' AND i.status='active' ORDER BY i.id",
-        (today, message.chat.id)
-    ).fetchall()
-    conn.close()
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT i.*, EXISTS(SELECT 1 FROM routine_log r WHERE r.item_id=i.id AND r.date=$1) as done "
+        "FROM items i WHERE i.chat_id=$2 AND i.type='routine' AND i.status='active' ORDER BY i.id",
+        today, message.chat.id
+    )
 
     if not rows:
         await message.answer("Рутин пока нет.\n\nНапиши например: «каждый день медитация 10 минут»")
@@ -404,15 +399,13 @@ async def routines_cmd(message: Message):
         await message.answer(f"{icon} {r['text']}", reply_markup=kb)
 
 
-
 @dp.message(Command("someday"))
 async def someday_cmd(message: Message):
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM items WHERE chat_id=? AND type='someday' AND status='active' ORDER BY id DESC LIMIT 20",
-        (message.chat.id,)
-    ).fetchall()
-    conn.close()
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM items WHERE chat_id=$1 AND type='someday' AND status='active' ORDER BY id DESC LIMIT 20",
+        message.chat.id
+    )
 
     if not rows:
         await message.answer("Список «когда-нибудь» пуст.\n\nНапиши например: «хочу поехать на Бали»")
@@ -424,12 +417,11 @@ async def someday_cmd(message: Message):
 
 @dp.message(Command("inbox"))
 async def inbox_cmd(message: Message):
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM items WHERE chat_id=? AND type='inbox' AND status='active' ORDER BY id DESC LIMIT 10",
-        (message.chat.id,)
-    ).fetchall()
-    conn.close()
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM items WHERE chat_id=$1 AND type='inbox' AND status='active' ORDER BY id DESC LIMIT 10",
+        message.chat.id
+    )
 
     if not rows:
         await message.answer("Инбокс пуст 🎉")
@@ -441,13 +433,12 @@ async def inbox_cmd(message: Message):
 
 @dp.message(Command("reflections"))
 async def reflections_cmd(message: Message):
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM items WHERE chat_id=? AND type='reflection' AND status='active' "
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM items WHERE chat_id=$1 AND type='reflection' AND status='active' "
         "ORDER BY created_at DESC LIMIT 10",
-        (message.chat.id,)
-    ).fetchall()
-    conn.close()
+        message.chat.id
+    )
 
     if not rows:
         await message.answer("Дневник пуст.\n\nПоделись наблюдением о себе — напиши или запиши голосовое 🎤")
@@ -475,22 +466,23 @@ async def generate_plan_image(chat_id: int, mode: str = 'week') -> bytes:
     if mode == 'week':
         start = today - timedelta(days=today.weekday())
         days = [start + timedelta(days=i) for i in range(7)]
-        return _draw_week(chat_id, days, today)
+        tasks = await _fetch_tasks(chat_id, days[0], days[-1])
+        return _draw_week(tasks, days, today)
     else:
         start = date(today.year, today.month, 1)
         last_day = calendar.monthrange(today.year, today.month)[1]
         days = [start + timedelta(days=i) for i in range(last_day)]
-        return _draw_month(chat_id, days, today)
+        tasks = await _fetch_tasks(chat_id, days[0], days[-1])
+        return _draw_month(tasks, days, today)
 
 
-def _fetch_tasks(chat_id: int, start: date, end: date) -> dict[str, list[str]]:
-    conn = db()
-    rows = conn.execute(
-        "SELECT text, date, time FROM items WHERE chat_id=? AND type='plan' AND status='active' "
-        "AND date >= ? AND date <= ? ORDER BY date, time",
-        (chat_id, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
-    ).fetchall()
-    conn.close()
+async def _fetch_tasks(chat_id: int, start: date, end: date) -> dict[str, list[str]]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT text, date, time FROM items WHERE chat_id=$1 AND type='plan' AND status='active' "
+        "AND date >= $2 AND date <= $3 ORDER BY date, time",
+        chat_id, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
+    )
     result: dict[str, list[str]] = {}
     for r in rows:
         label = f"{r['time']}  {r['text']}" if r['time'] else r['text']
@@ -499,38 +491,36 @@ def _fetch_tasks(chat_id: int, start: date, end: date) -> dict[str, list[str]]:
 
 
 # пастельная палитра
-BG        = '#fdf8ff'   # фон страницы
-CARD_BG   = '#ffffff'   # фон карточки дня
-WKND_BG   = '#f8f4ff'   # фон выходного
-HDR_TODAY = '#d8b4fe'   # шапка сегодня (лаванда)
-HDR_WKND  = '#fce7f3'   # шапка выходного (пудра)
-HDR_REG   = '#f0e9ff'   # шапка обычного дня
-TXT_MAIN  = '#3d2c5e'   # основной текст
-TXT_MUTED = '#b0a0c8'   # приглушённый текст
-BORDER    = '#ede8f5'   # граница
+BG        = '#fdf8ff'
+CARD_BG   = '#ffffff'
+WKND_BG   = '#f8f4ff'
+HDR_TODAY = '#d8b4fe'
+HDR_WKND  = '#fce7f3'
+HDR_REG   = '#f0e9ff'
+TXT_MAIN  = '#3d2c5e'
+TXT_MUTED = '#b0a0c8'
+BORDER    = '#ede8f5'
 
 PASTEL_PILLS = [
-    ('#e9d5ff', '#6b21a8'),  # лаванда
-    ('#fce7f3', '#9d174d'),  # розовая пудра
-    ('#d1fae5', '#065f46'),  # мята
-    ('#fef3c7', '#92400e'),  # персик
-    ('#dbeafe', '#1e40af'),  # нежно-голубой
-    ('#ffd7d7', '#991b1b'),  # пастельный коралл
-    ('#d4f5e9', '#155e3c'),  # шалфей
-    ('#ede9fe', '#4c1d95'),  # сирень
+    ('#e9d5ff', '#6b21a8'),
+    ('#fce7f3', '#9d174d'),
+    ('#d1fae5', '#065f46'),
+    ('#fef3c7', '#92400e'),
+    ('#dbeafe', '#1e40af'),
+    ('#ffd7d7', '#991b1b'),
+    ('#d4f5e9', '#155e3c'),
+    ('#ede9fe', '#4c1d95'),
 ]
 
 
-def _draw_week(chat_id: int, days: list, today: date) -> bytes:
-    tasks = _fetch_tasks(chat_id, days[0], days[-1])
-
+def _draw_week(tasks: dict, days: list, today: date) -> bytes:
     WIDTH = 860
     PAD   = 28
     TITLE_H = 54
     DAY_H   = 52
     LINE_H  = 42
     GAP     = 8
-    R       = 10  # радиус скругления шапки
+    R       = 10
 
     total_h = TITLE_H
     for d in days:
@@ -597,9 +587,7 @@ def _draw_week(chat_id: int, days: list, today: date) -> bytes:
     return buf.getvalue()
 
 
-def _draw_month(chat_id: int, days: list, today: date) -> bytes:
-    tasks = _fetch_tasks(chat_id, days[0], days[-1])
-
+def _draw_month(tasks: dict, days: list, today: date) -> bytes:
     CELL_W  = 174
     CELL_H  = 124
     PAD_TOP = 72
@@ -677,13 +665,12 @@ def _draw_month(chat_id: int, days: list, today: date) -> bytes:
 
 @dp.message(Command("plan_list"))
 async def plan_list_cmd(message: Message):
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM items WHERE chat_id=? AND type='plan' AND status='active' "
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM items WHERE chat_id=$1 AND type='plan' AND status='active' "
         "ORDER BY date, time LIMIT 30",
-        (message.chat.id,)
-    ).fetchall()
-    conn.close()
+        message.chat.id
+    )
 
     if not rows:
         await message.answer("Планов нет 🎉")
@@ -734,13 +721,11 @@ async def month_cmd(message: Message):
 @dp.callback_query(F.data.startswith("done_routine:"))
 async def done_routine(callback: CallbackQuery):
     _, item_id, today = callback.data.split(":")
-    conn = db()
-    conn.execute(
-        "INSERT OR IGNORE INTO routine_log (chat_id, item_id, date) VALUES (?,?,?)",
-        (callback.message.chat.id, int(item_id), today)
+    pool = await get_pool()
+    await pool.execute(
+        "INSERT INTO routine_log (chat_id, item_id, date) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+        callback.message.chat.id, int(item_id), today
     )
-    conn.commit()
-    conn.close()
     await callback.message.edit_text("✅ " + callback.message.text)
     await callback.answer("Отмечено!")
 
@@ -748,10 +733,8 @@ async def done_routine(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("done_plan:"))
 async def done_plan(callback: CallbackQuery):
     item_id = int(callback.data.split(":")[1])
-    conn = db()
-    conn.execute("UPDATE items SET status='done' WHERE id=?", (item_id,))
-    conn.commit()
-    conn.close()
+    pool = await get_pool()
+    await pool.execute("UPDATE items SET status='done' WHERE id=$1", item_id)
     await callback.message.edit_text("✅ " + callback.message.text)
     await callback.answer("Готово!")
 
@@ -759,10 +742,8 @@ async def done_plan(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("delete:"))
 async def delete_item(callback: CallbackQuery):
     item_id = int(callback.data.split(":")[1])
-    conn = db()
-    conn.execute("DELETE FROM items WHERE id=?", (item_id,))
-    conn.commit()
-    conn.close()
+    pool = await get_pool()
+    await pool.execute("DELETE FROM items WHERE id=$1", item_id)
     await callback.message.edit_text("🗑 " + callback.message.text)
     await callback.answer("Удалено")
 
@@ -771,7 +752,7 @@ async def delete_item(callback: CallbackQuery):
 
 @dp.message(F.text)
 async def handle_message(message: Message):
-    register_user(message.chat.id)
+    await register_user(message.chat.id)
     await process_and_save(message.chat.id, message.text, message)
 
 
@@ -783,16 +764,15 @@ async def send_evening_plan(chat_id: int):
     tomorrow_str = tomorrow.strftime('%Y-%m-%d')
     tomorrow_display = tomorrow.strftime('%d.%m.%Y')
 
-    conn = db()
-    plans = conn.execute(
-        "SELECT * FROM items WHERE chat_id=? AND type='plan' AND date=? AND status='active' ORDER BY time",
-        (chat_id, tomorrow_str)
-    ).fetchall()
-    routines = conn.execute(
-        "SELECT * FROM items WHERE chat_id=? AND type='routine' AND status='active' ORDER BY id",
-        (chat_id,)
-    ).fetchall()
-    conn.close()
+    pool = await get_pool()
+    plans = await pool.fetch(
+        "SELECT * FROM items WHERE chat_id=$1 AND type='plan' AND date=$2 AND status='active' ORDER BY time",
+        chat_id, tomorrow_str
+    )
+    routines = await pool.fetch(
+        "SELECT * FROM items WHERE chat_id=$1 AND type='routine' AND status='active' ORDER BY id",
+        chat_id
+    )
 
     text = f"🌙 *План на завтра — {tomorrow_display}*\n\n"
 
@@ -839,7 +819,6 @@ async def scheduler_loop():
     sent_reflection: set[str] = set()
     sent_plans: set[str] = set()
 
-    # Рефлексия в 9, 12, 15, 18 по Вьетнаму = 2, 5, 8, 11 UTC
     REFLECTION_UTC = {'02:00', '05:00', '08:00', '11:00'}
 
     while True:
@@ -849,35 +828,31 @@ async def scheduler_loop():
         vn_date = now_vn.strftime('%Y-%m-%d')
         vn_hhmm = now_vn.strftime('%H:%M')
 
-        # Вечерний план в 22:00 VN = 15:00 UTC
         evening_key = f"evening:{vn_date}"
         if utc_hhmm == '15:00' and evening_key not in sent_evening:
             sent_evening.add(evening_key)
-            for chat_id in get_all_users():
+            for chat_id in await get_all_users():
                 try:
                     await send_evening_plan(chat_id)
                 except Exception as e:
                     logging.error(f"Evening plan error {chat_id}: {e}")
 
-        # Рефлексия каждые 3 часа
         reflection_key = f"reflection:{vn_date}:{utc_hhmm}"
         if utc_hhmm in REFLECTION_UTC and reflection_key not in sent_reflection:
             sent_reflection.add(reflection_key)
-            for chat_id in get_all_users():
+            for chat_id in await get_all_users():
                 try:
                     await send_reflection_prompt(chat_id)
                 except Exception as e:
                     logging.error(f"Reflection error {chat_id}: {e}")
 
-        # Напоминания о планах в точное время
         plan_key = f"plan:{vn_date}:{vn_hhmm}"
         if plan_key not in sent_plans:
-            conn = db()
-            due = conn.execute(
-                "SELECT * FROM items WHERE type='plan' AND status='active' AND date=? AND time=?",
-                (vn_date, vn_hhmm)
-            ).fetchall()
-            conn.close()
+            pool = await get_pool()
+            due = await pool.fetch(
+                "SELECT * FROM items WHERE type='plan' AND status='active' AND date=$1 AND time=$2",
+                vn_date, vn_hhmm
+            )
             if due:
                 sent_plans.add(plan_key)
                 for p in due:
@@ -901,7 +876,7 @@ async def scheduler_loop():
 
 
 async def main():
-    init_db()
+    await init_db()
     await bot.set_my_commands([
         {"command": "plans",       "description": "📅 План на неделю картинкой"},
         {"command": "month",       "description": "🗓 План на месяц картинкой"},
