@@ -144,17 +144,6 @@ async def classify_message(text: str, history: list[dict] | None = None) -> dict
     weekdays = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']
     weekday_ru = weekdays[now_vn.weekday()]
 
-    # Build explicit week calendars so AI never has to guess day→date mapping
-    monday = today_date - timedelta(days=today_date.weekday())
-    this_week_lines = "\n".join(
-        f"  • {weekdays[i]} = {(monday + timedelta(days=i)).strftime('%Y-%m-%d')}"
-        for i in range(7)
-    )
-    next_monday = monday + timedelta(days=7)
-    next_week_lines = "\n".join(
-        f"  • {weekdays[i]} = {(next_monday + timedelta(days=i)).strftime('%Y-%m-%d')}"
-        for i in range(7)
-    )
     tomorrow = (today_date + timedelta(days=1)).strftime('%Y-%m-%d')
 
     system_prompt = f"""Ты личный ассистент-органайзер. Сегодня {today_str} ({weekday_ru}). Пользователь в Вьетнаме UTC+7.
@@ -188,18 +177,10 @@ async def classify_message(text: str, history: list[dict] | None = None) -> dict
 Для типа delete:
 • old_text = ключевые слова из пункта который нужно удалить (1-3 слова)
 
-ДАТЫ — используй точные числа ниже, не вычисляй сам:
-• сегодня = {today_str}
-• завтра = {tomorrow}
-
-Эта неделя:
-{this_week_lines}
-
-Следующая неделя:
-{next_week_lines}
-
+ДАТЫ:
+• сегодня = {today_str} ({weekday_ru})
 • числа без года → текущий год (или следующий если дата уже прошла)
-• «эта пятница» / «в пятницу» / «пятница» → смотри эта неделя выше
+• «эта неделя», «в среду», «эта пятница» и т.д. — вычисли дату сам исходя из сегодняшней даты
 
 ТЕКСТ (поле text): перепиши грамотно и чисто, исправь все ошибки. Для plan — формулируй как действие с глаголом.
 Примеры: «зап на узи голеностоп» → «Записаться на УЗИ голеностопа» | «психолог 16-18» → «Сеанс у психолога» | «посчитать финансы» → «Подвести финансовый итог месяца»
