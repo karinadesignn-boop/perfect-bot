@@ -595,82 +595,69 @@ def _draw_week(tasks: dict, days: list, today: date) -> bytes:
 
 
 def _draw_month(tasks: dict, days: list, today: date) -> bytes:
-    import textwrap
+    WIDTH   = 860
+    PAD     = 28
+    TITLE_H = 54
+    DAY_H   = 52
+    LINE_H  = 42
+    GAP     = 8
+    day_names_full = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
 
-    CELL_W   = 210
-    CELL_H   = 210
-    PILL_H   = 46
-    PILL_GAP = 6
-    PAD_TOP  = 72
-    HDR_H    = 34
-    COLS     = 7
-    first_wd = days[0].weekday()
-    n_rows   = ((first_wd + len(days)) + 6) // 7
-    WIDTH    = CELL_W * COLS
-    HEIGHT   = PAD_TOP + HDR_H + n_rows * CELL_H + 24
+    # считаем высоту — только дни с планами
+    days_with_tasks = [d for d in days if tasks.get(d.strftime('%Y-%m-%d'))]
+    total_h = TITLE_H
+    for d in days:
+        n = len(tasks.get(d.strftime('%Y-%m-%d'), []))
+        if n == 0:
+            continue
+        total_h += DAY_H + n * LINE_H + GAP * 2
+    total_h += PAD + 10
 
-    fig = plt.figure(figsize=(WIDTH / 100, HEIGHT / 100), dpi=150)
+    fig = plt.figure(figsize=(WIDTH / 100, total_h / 100), dpi=150)
     fig.patch.set_facecolor(BG)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, WIDTH)
-    ax.set_ylim(0, HEIGHT)
+    ax.set_ylim(0, total_h)
     ax.invert_yaxis()
     ax.axis('off')
 
     m = days[0]
-    ax.text(WIDTH / 2, 22, f"{MONTH_NAMES[m.month - 1]}  {m.year}",
-            ha='center', va='top', fontsize=22, color=TXT_MAIN, fontweight='bold')
+    ax.text(WIDTH / 2, 16, f"{MONTH_NAMES[m.month - 1]}  {m.year}",
+            ha='center', va='top', fontsize=20, color=TXT_MAIN, fontweight='bold')
 
-    for i, dn in enumerate(['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС']):
-        cx = i * CELL_W + CELL_W / 2
-        color = '#c084fc' if i >= 5 else TXT_MUTED
-        ax.text(cx, PAD_TOP + 8, dn, ha='center', va='top',
-                fontsize=12, color=color, fontweight='bold')
-
-    for idx, d in enumerate(days):
-        cell_idx = first_wd + idx
-        col = cell_idx % 7
-        row = cell_idx // 7
-        cx = col * CELL_W
-        cy = PAD_TOP + HDR_H + row * CELL_H
+    y = TITLE_H
+    for d in days:
         date_str = d.strftime('%Y-%m-%d')
+        day_tasks = tasks.get(date_str, [])
+        if not day_tasks:
+            continue
+
         is_today = (d == today)
         is_weekend = d.weekday() >= 5
 
-        bg = WKND_BG if is_weekend else CARD_BG
-        ax.add_patch(plt.Rectangle([cx, cy], CELL_W, CELL_H,
-                                    facecolor=bg, edgecolor=BORDER, linewidth=0.6))
+        hdr = HDR_TODAY if is_today else (HDR_WKND if is_weekend else HDR_REG)
+        ax.add_patch(mpatches.FancyBboxPatch(
+            [PAD, y], WIDTH - PAD * 2, DAY_H,
+            boxstyle="round,pad=0", facecolor=hdr, edgecolor=BORDER, linewidth=0.8, zorder=1
+        ))
+        day_label = f"{day_names_full[d.weekday()].upper()}  ·  {d.strftime('%d %B')}"
+        ax.text(PAD + 18, y + DAY_H / 2, day_label, ha='left', va='center',
+                fontsize=13, color=TXT_MAIN, fontweight='bold', zorder=2)
 
-        if is_today:
-            ax.add_patch(plt.Circle((cx + 20, cy + 20), 15,
-                                     facecolor='#c084fc', edgecolor='none', zorder=2))
-            ax.text(cx + 20, cy + 20, str(d.day), ha='center', va='center',
-                    fontsize=12, color='#ffffff', fontweight='bold', zorder=3)
-        else:
-            nc = '#c084fc' if is_weekend else TXT_MAIN
-            ax.text(cx + 10, cy + 8, str(d.day), ha='left', va='top',
-                    fontsize=12, color=nc, fontweight='bold')
-
-        day_tasks = tasks.get(date_str, [])
-        for j, task in enumerate(day_tasks[:3]):
-            py = cy + 36 + j * (PILL_H + PILL_GAP)
-            if py + PILL_H > cy + CELL_H - 4:
-                break
-            lines = textwrap.wrap(task, width=24)[:2]
-            wrapped = '\n'.join(lines)
+        y += DAY_H + GAP
+        for j, task in enumerate(day_tasks):
             pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
             ax.add_patch(mpatches.FancyBboxPatch(
-                [cx + 4, py], CELL_W - 8, PILL_H,
-                boxstyle="round,pad=2", facecolor=pill_bg, edgecolor='none'
+                [PAD + 4, y + 5], WIDTH - (PAD + 4) * 2, LINE_H - 10,
+                boxstyle="round,pad=4", facecolor=pill_bg, edgecolor='none'
             ))
-            ax.text(cx + CELL_W / 2, py + PILL_H / 2, wrapped,
-                    ha='center', va='center', fontsize=8, color=pill_txt,
-                    fontweight='bold', multialignment='center', linespacing=1.3)
+            ax.text(PAD + 22, y + LINE_H / 2, task, ha='left', va='center',
+                    fontsize=12, color=pill_txt, fontweight='bold')
+            y += LINE_H
 
-        extra = len(day_tasks) - 3
-        if extra > 0:
-            ax.text(cx + CELL_W - 6, cy + CELL_H - 6, f'+{extra}',
-                    ha='right', va='bottom', fontsize=8, color=TXT_MUTED)
+        y += GAP
+        ax.plot([PAD, WIDTH - PAD], [y, y], color=BORDER, linewidth=0.8)
+        y += 4
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor=BG)
