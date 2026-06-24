@@ -188,11 +188,15 @@ async def classify_message(text: str) -> dict:
 
     content = response.choices[0].message.content
     try:
-        return json.loads(content)
+        result = json.loads(content)
     except json.JSONDecodeError:
         start = content.find('{')
         end = content.rfind('}') + 1
-        return json.loads(content[start:end])
+        result = json.loads(content[start:end])
+
+    if isinstance(result, list):
+        result = result[0] if result else {}
+    return result
 
 
 async def process_and_save(chat_id: int, text: str, message: Message):
