@@ -598,7 +598,7 @@ def _draw_month(tasks: dict, days: list, today: date) -> bytes:
     import textwrap
 
     CELL_W   = 210
-    CELL_H   = 175
+    CELL_H   = 210
     PILL_H   = 46
     PILL_GAP = 6
     PAD_TOP  = 72
