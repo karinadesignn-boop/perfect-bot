@@ -153,17 +153,21 @@ async def classify_message(text: str) -> dict:
     weekdays = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']
     weekday_ru = weekdays[now_vn.weekday()]
 
-    system_prompt = f"""Ты личный ассистент. Анализируй сообщение и классифицируй его.
+    system_prompt = f"""Ты личный ассистент. Анализируй сообщение и классифицируй каждый пункт отдельно.
 
 Сегодня: {today_str}, {weekday_ru}. Пользователь во Вьетнаме (UTC+7).
 
-Верни ТОЛЬКО валидный JSON без пояснений:
+Верни ТОЛЬКО валидный JSON:
 {{
-  "type": "plan|routine|someday|reflection|question",
-  "text": "очищенный текст для сохранения",
-  "date": "YYYY-MM-DD или null",
-  "time": "HH:MM или null",
-  "response": "короткий дружелюбный ответ на русском"
+  "items": [
+    {{
+      "type": "plan|routine|someday|reflection|question",
+      "text": "текст одного пункта",
+      "date": "YYYY-MM-DD или null",
+      "time": "HH:MM или null"
+    }}
+  ],
+  "response": "короткий ответ на русском — подтверждение или ответ на вопрос"
 }}
 
 Типы:
@@ -171,10 +175,10 @@ async def classify_message(text: str) -> dict:
 - routine: ежедневная привычка которую надо делать каждый день
 - someday: мечта, идея без даты, «хочу когда-нибудь»
 - reflection: наблюдения о себе, чувства, мысли о жизни
-- question: вопрос или разговор — просто ответь в response
+- question: вопрос или разговор (не сохраняй, только ответь в response)
 
-Для plan: вычисли точную дату если сказано «завтра», «в пятницу» и т.д.
-Ответ в response — дружелюбный, короткий, на русском."""
+Если в сообщении несколько дел — каждое отдельным элементом в items.
+Для plan: вычисли точную дату если сказано «завтра», «в пятницу» и т.д."""
 
     response = await groq_client.chat.completions.create(
         model="llama-3.1-8b-instant",
@@ -182,21 +186,17 @@ async def classify_message(text: str) -> dict:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
         ],
-        max_tokens=300,
+        max_tokens=800,
         response_format={"type": "json_object"},
     )
 
     content = response.choices[0].message.content
     try:
-        result = json.loads(content)
+        return json.loads(content)
     except json.JSONDecodeError:
         start = content.find('{')
         end = content.rfind('}') + 1
-        result = json.loads(content[start:end])
-
-    if isinstance(result, list):
-        result = result[0] if result else {}
-    return result
+        return json.loads(content[start:end])
 
 
 async def process_and_save(chat_id: int, text: str, message: Message):
@@ -213,27 +213,38 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
         return
 
-    msg_type = result.get("type", "inbox")
-    save_text = result.get("text", text)
+    items = result.get("items", [])
     response_text = result.get("response", "Сохранила ✅")
-    item_date = result.get("date")
-    item_time = result.get("time")
 
-    if msg_type == "question":
+    # только вопрос — ничего не сохраняем
+    if items and all(i.get("type") == "question" for i in items):
         await message.answer(response_text)
         return
 
+    icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥"}
     conn = db()
-    conn.execute(
-        "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES (?,?,?,?,?,?,?)",
-        (chat_id, save_text, msg_type, item_date, item_time, 'active', datetime.now().isoformat())
-    )
+    saved = []
+    for item in items:
+        msg_type = item.get("type", "inbox")
+        if msg_type == "question":
+            continue
+        save_text = item.get("text", text)
+        item_date = item.get("date")
+        item_time = item.get("time")
+        conn.execute(
+            "INSERT INTO items (chat_id, text, type, date, time, status, created_at) VALUES (?,?,?,?,?,?,?)",
+            (chat_id, save_text, msg_type, item_date, item_time, 'active', datetime.now().isoformat())
+        )
+        saved.append(icons.get(msg_type, "📥"))
     conn.commit()
     conn.close()
 
-    icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥"}
-    icon = icons.get(msg_type, "📥")
-    await message.answer(f"{icon} {response_text}")
+    if not saved:
+        await message.answer(response_text)
+        return
+
+    icons_line = " ".join(dict.fromkeys(saved))
+    await message.answer(f"{icons_line} {response_text}")
 
 
 # ---------- ГОЛОСОВЫЕ ----------
