@@ -630,72 +630,110 @@ def _draw_week(tasks: dict, days: list, today: date) -> bytes:
 
 
 def _draw_month(tasks: dict, days: list, today: date) -> bytes:
-    WIDTH   = 860
-    PAD     = 28
-    TITLE_H = 54
-    DAY_H   = 52
-    LINE_H  = 42
-    GAP     = 8
-    day_names_full = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+    import textwrap
 
-    # считаем высоту — только дни с планами
-    days_with_tasks = [d for d in days if tasks.get(d.strftime('%Y-%m-%d'))]
-    total_h = TITLE_H
+    COLS     = 7
+    CELL_W   = 182
+    HDR_H    = 34
+    LINE_H   = 17
+    PILL_GAP = 2
+    CELL_PAD = 3
+    PAD_TOP  = 64
+    COL_HDR  = 26
+    WRAP_W   = 20
+    WIDTH    = CELL_W * COLS
+
+    first_wd = days[0].weekday()
+    n_rows   = ((first_wd + len(days)) + 6) // 7
+
+    # заранее считаем перенесённые строки для каждого дня
+    day_lines: dict[str, list[list[str]]] = {}
     for d in days:
-        n = len(tasks.get(d.strftime('%Y-%m-%d'), []))
-        if n == 0:
-            continue
-        total_h += DAY_H + n * LINE_H + GAP * 2
-    total_h += PAD + 10
+        date_str = d.strftime('%Y-%m-%d')
+        day_lines[date_str] = [
+            textwrap.wrap(t, width=WRAP_W) or [t]
+            for t in tasks.get(date_str, [])
+        ]
 
-    fig = plt.figure(figsize=(WIDTH / 100, total_h / 100), dpi=150)
+    # высота строки сетки — по самому загруженному дню в строке
+    row_heights = []
+    for row in range(n_rows):
+        max_content = LINE_H
+        for col in range(COLS):
+            day_idx = row * COLS + col - first_wd
+            if 0 <= day_idx < len(days):
+                lpt = day_lines[days[day_idx].strftime('%Y-%m-%d')]
+                content = sum(len(ls) for ls in lpt) * LINE_H + len(lpt) * PILL_GAP
+                max_content = max(max_content, content)
+        row_heights.append(HDR_H + CELL_PAD + max_content + CELL_PAD)
+
+    HEIGHT = PAD_TOP + COL_HDR + sum(row_heights) + 20
+
+    fig = plt.figure(figsize=(WIDTH / 100, HEIGHT / 100), dpi=100)
     fig.patch.set_facecolor(BG)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, WIDTH)
-    ax.set_ylim(0, total_h)
+    ax.set_ylim(0, HEIGHT)
     ax.invert_yaxis()
     ax.axis('off')
 
     m = days[0]
-    ax.text(WIDTH / 2, 16, f"{MONTH_NAMES[m.month - 1]}  {m.year}",
+    ax.text(WIDTH / 2, 18, f"{MONTH_NAMES[m.month - 1]}  {m.year}",
             ha='center', va='top', fontsize=20, color=TXT_MAIN, fontweight='bold')
 
-    y = TITLE_H
-    for d in days:
-        date_str = d.strftime('%Y-%m-%d')
-        day_tasks = tasks.get(date_str, [])
-        if not day_tasks:
-            continue
+    for i, dn in enumerate(['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС']):
+        cx = i * CELL_W + CELL_W / 2
+        color = '#c084fc' if i >= 5 else TXT_MUTED
+        ax.text(cx, PAD_TOP + 5, dn, ha='center', va='top',
+                fontsize=11, color=color, fontweight='bold')
 
-        is_today = (d == today)
-        is_weekend = d.weekday() >= 5
+    row_y = PAD_TOP + COL_HDR
+    for row in range(n_rows):
+        rh = row_heights[row]
+        for col in range(COLS):
+            day_idx = row * COLS + col - first_wd
+            cx = col * CELL_W
+            cy = row_y
 
-        hdr = HDR_TODAY if is_today else (HDR_WKND if is_weekend else HDR_REG)
-        ax.add_patch(mpatches.FancyBboxPatch(
-            [PAD, y], WIDTH - PAD * 2, DAY_H,
-            boxstyle="round,pad=0", facecolor=hdr, edgecolor=BORDER, linewidth=0.8, zorder=1
-        ))
-        day_label = f"{day_names_full[d.weekday()].upper()}  ·  {d.strftime('%d %B')}"
-        ax.text(PAD + 18, y + DAY_H / 2, day_label, ha='left', va='center',
-                fontsize=13, color=TXT_MAIN, fontweight='bold', zorder=2)
+            in_month = 0 <= day_idx < len(days)
+            bg = (WKND_BG if in_month and days[day_idx].weekday() >= 5 else CARD_BG) if in_month else '#f0eaf8'
+            ax.add_patch(plt.Rectangle([cx, cy], CELL_W, rh,
+                                        facecolor=bg, edgecolor=BORDER, linewidth=0.5))
 
-        y += DAY_H + GAP
-        for j, task in enumerate(day_tasks):
-            pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
-            ax.add_patch(mpatches.FancyBboxPatch(
-                [PAD + 4, y + 5], WIDTH - (PAD + 4) * 2, LINE_H - 10,
-                boxstyle="round,pad=4", facecolor=pill_bg, edgecolor='none'
-            ))
-            ax.text(PAD + 22, y + LINE_H / 2, task, ha='left', va='center',
-                    fontsize=12, color=pill_txt, fontweight='bold')
-            y += LINE_H
+            if in_month:
+                d = days[day_idx]
+                date_str = d.strftime('%Y-%m-%d')
+                is_today  = (d == today)
+                is_weekend = d.weekday() >= 5
 
-        y += GAP
-        ax.plot([PAD, WIDTH - PAD], [y, y], color=BORDER, linewidth=0.8)
-        y += 4
+                if is_today:
+                    ax.add_patch(plt.Circle((cx + 16, cy + 16), 12,
+                                             facecolor='#c084fc', edgecolor='none', zorder=2))
+                    ax.text(cx + 16, cy + 16, str(d.day), ha='center', va='center',
+                            fontsize=10, color='#ffffff', fontweight='bold', zorder=3)
+                else:
+                    nc = '#c084fc' if is_weekend else TXT_MAIN
+                    ax.text(cx + 6, cy + 5, str(d.day), ha='left', va='top',
+                            fontsize=10, color=nc, fontweight='bold')
+
+                ty = cy + HDR_H
+                for j, lines in enumerate(day_lines[date_str]):
+                    pill_h = len(lines) * LINE_H
+                    pill_bg, pill_txt = PASTEL_PILLS[j % len(PASTEL_PILLS)]
+                    ax.add_patch(mpatches.FancyBboxPatch(
+                        [cx + 3, ty], CELL_W - 6, pill_h,
+                        boxstyle="round,pad=1", facecolor=pill_bg, edgecolor='none'
+                    ))
+                    for k, line in enumerate(lines):
+                        ax.text(cx + CELL_W / 2, ty + k * LINE_H + LINE_H / 2, line,
+                                ha='center', va='center', fontsize=7.5,
+                                color=pill_txt, fontweight='bold')
+                    ty += pill_h + PILL_GAP
+
+        row_y += rh
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor=BG)
+    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor=BG)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
