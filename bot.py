@@ -653,6 +653,28 @@ def _draw_month(chat_id: int, days: list, today: date) -> bytes:
     return buf.getvalue()
 
 
+@dp.message(Command("plan_list"))
+async def plan_list_cmd(message: Message):
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM items WHERE chat_id=? AND type='plan' AND status='active' "
+        "ORDER BY date, time LIMIT 30",
+        (message.chat.id,)
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await message.answer("Планов нет 🎉")
+        return
+
+    await message.answer("📋 Все активные планы (нажми 🗑 чтобы удалить):")
+    for r in rows:
+        date_str = f"📅 {r['date']}" if r['date'] else "📅 без даты"
+        time_str = f"  {r['time']}" if r['time'] else ""
+        label = f"{date_str}{time_str}\n{r['text']}"
+        await message.answer(label, reply_markup=plan_keyboard(r['id']))
+
+
 @dp.message(Command("plans"))
 async def plans_cmd(message: Message):
     if not HAS_MPL:
