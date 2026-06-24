@@ -153,7 +153,7 @@ async def classify_message(text: str) -> dict:
 • question — вопрос или просьба об информации (только ответь в response, не сохраняй)
 • update — ЛЮБОЕ изменение существующего пункта: перенести дату, изменить время, переформулировать, исправить. Триггеры: «перенеси», «сдвинь», «измени», «поменяй», «скорректируй», «замени», «исправь», «вместо X», «не X а Y», «X теперь Y»
 • delete — УДАЛЕНИЕ существующего пункта. Триггеры: «удали», «убери», «не нужен», «отмени», «убрать», «удалить»
-• show_day — просьба показать план на конкретный день («что на завтра», «план на пятницу», «покажи 5 июля», «что у меня в среду», «картинка на сегодня»). Поле date = дата этого дня в формате YYYY-MM-DD
+• show_day — ПОКАЗАТЬ план на конкретный день. Это НЕ question! Триггеры: «что на завтра», «план на пятницу», «покажи среду», «что у меня в среду», «картинка на сегодня», «что запланировано на 5 июля», «покажи мне день», «что на этой неделе в четверг». Поле date = дата этого дня в формате YYYY-MM-DD
 • show_month — просьба показать план/календарь на конкретный месяц («план на июль», «следующий месяц», «покажи август», «картинка на июнь»). Поле date = первый день этого месяца в формате YYYY-MM-01
 
 Для типа update — заполняй поля так:
@@ -232,12 +232,16 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 target = datetime.strptime(date_str, "%Y-%m-%d").date()
             except Exception:
                 target = datetime.now(VN_TZ).date()
-            await bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
-            today = datetime.now(VN_TZ).date()
-            img_bytes = await _draw_day(chat_id, target, today)
-            day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
-            caption = f"📅 {day_names[target.weekday()]}, {target.strftime('%d %B %Y')}"
-            await message.answer_photo(BufferedInputFile(img_bytes, filename="day.png"), caption=caption)
+            try:
+                await bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
+                today = datetime.now(VN_TZ).date()
+                img_bytes = await _draw_day(chat_id, target, today)
+                day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+                caption = f"📅 {day_names[target.weekday()]}, {target.strftime('%d %B %Y')}"
+                await message.answer_photo(BufferedInputFile(img_bytes, filename="day.png"), caption=caption)
+            except Exception as e:
+                logging.error(f"show_day error: {e}")
+                await message.answer(f"❌ Ошибка при создании картинки: {e}")
             return
 
         if item.get("type") == "show_month":
