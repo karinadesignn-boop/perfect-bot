@@ -272,13 +272,16 @@ def _quick_intent(text: str, today: date) -> dict | None:
         'суббот': 5,
         'воскресень': 6,
     }
-    MONTH_NAMES_RU = {
-        'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4, 'ма': 5,
+    # Safe prefixes — long enough to avoid false matches
+    MONTH_MAP = {
+        'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4,
+        'май': 5, 'мае': 5, 'маю': 5,
         'июн': 6, 'июл': 7, 'август': 8, 'сентябр': 9,
         'октябр': 10, 'ноябр': 11, 'декабр': 12,
     }
-    SHOW = ['план', 'покажи', 'скинь', 'вышли', 'выслать', 'расписан',
-            'что у меня', 'что на', 'что в', 'мой день', 'день', 'покажи']
+    SHOW = ['план', 'покажи', 'скинь', 'вышли', 'выслать', 'пришли',
+            'расписан', 'что у меня', 'что на', 'что в', 'мой день',
+            'день', 'календар', 'посмотр']
 
     has_show = any(w in t for w in SHOW)
 
@@ -299,8 +302,19 @@ def _quick_intent(text: str, today: date) -> dict | None:
                 d += timedelta(days=7)
             return {"type": "show_day", "date": d.strftime('%Y-%m-%d')}
 
+    # "следующий месяц" / "следующего месяца"
+    if 'следующ' in t and 'месяц' in t:
+        nm = today.month % 12 + 1
+        yr = today.year + (1 if nm == 1 else 0)
+        return {"type": "show_month", "date": f"{yr}-{nm:02d}-01"}
+
+    # "этот месяц" / "текущий месяц"
+    if ('этот месяц' in t or 'текущ' in t) and 'месяц' in t:
+        return {"type": "show_month", "date": f"{today.year}-{today.month:02d}-01"}
+
+    # Specific month name (only when show intent is clear)
     if has_show or 'месяц' in t:
-        for name, num in MONTH_NAMES_RU.items():
+        for name, num in MONTH_MAP.items():
             if name in t:
                 yr = today.year if num >= today.month else today.year + 1
                 return {"type": "show_month", "date": f"{yr}-{num:02d}-01"}
