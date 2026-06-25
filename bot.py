@@ -159,6 +159,7 @@ async def classify_message(text: str, history: list[dict] | None = None) -> dict
 • question — пользователь спрашивает что-то у тебя (ответь в response, ничего не сохраняй)
 • delete — удалить существующий пункт. Любые формулировки: «удали», «убери», «не нужно», «отмени», «вычеркни», «убрать», «нет больше», «снимаю», «уже не актуально»
 • update — изменить существующий пункт: дату, время, текст. Любые формулировки: «перенеси», «сдвинь», «поменяй», «измени», «исправь», «теперь в X», «не X а Y», «вместо X», «переноси на», «новое время»
+• show_week — показать план на текущую неделю картинкой. Любые формулировки: «план на неделю», «покажи неделю», «что на этой неделе», «скинь неделю», «неделя», «планы на неделю», «что у меня на неделе», «расписание на неделю». Поле date не нужно.
 • show_day — показать что запланировано на конкретный день. НЕ question! Любые формулировки: «что на завтра», «покажи среду», «что у меня сегодня», «мой день», «план на пятницу», «что в субботу», «расскажи про четверг», «что запланировано на 5 июля». Поле date = YYYY-MM-DD
 • show_month — показать месяц целиком. Любые формулировки: «план на июль», «покажи июнь», «следующий месяц», «что в августе». Поле date = YYYY-MM-01
 
@@ -266,6 +267,21 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         return
 
     for item in items:
+        if item.get("type") == "show_week":
+            if not HAS_MPL:
+                await message.answer("❌ matplotlib не установлен на сервере.")
+                return
+            try:
+                await bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
+                img_bytes = await generate_plan_image(chat_id, 'week')
+                caption = "📅 План на неделю"
+                await message.answer_photo(BufferedInputFile(img_bytes, filename="week.png"), caption=caption)
+                _add_to_history(chat_id, text, caption)
+            except Exception as e:
+                logging.error(f"show_week error: {e}")
+                await message.answer(f"❌ Ошибка: {e}")
+            return
+
         if item.get("type") == "show_day":
             date_str = item.get("date", "")
             try:
