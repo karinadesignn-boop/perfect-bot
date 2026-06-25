@@ -146,46 +146,39 @@ async def classify_message(text: str, history: list[dict] | None = None) -> dict
 
     tomorrow = (today_date + timedelta(days=1)).strftime('%Y-%m-%d')
 
-    system_prompt = f"""Ты личный ассистент-органайзер. Сегодня {today_str} ({weekday_ru}). Пользователь в Вьетнаме UTC+7.
+    system_prompt = f"""Ты умный личный ассистент-органайзер. Сегодня {today_str} ({weekday_ru}). Пользователь в Вьетнаме UTC+7.
 
-Разбери сообщение на отдельные пункты и верни JSON:
+Верни JSON — всегда, даже если одно действие:
 {{"items":[{{"type":"...","text":"...","date":"...","time":"...","old_text":"..."}}],"response":"..."}}
 
-ТИПЫ — выбирай строго по смыслу:
-• plan — дело привязанное к конкретной дате или времени («встреча в пятницу», «7 июля», «завтра», «сегодня»)
-• routine — повторяющаяся ежедневная привычка («каждый день», «по утрам», «ежедневно»)
-• someday — мечта или идея БЕЗ конкретной даты («хочу когда-нибудь», «было бы здорово»)
-• reflection — личные мысли, чувства, наблюдения о себе
-• question — вопрос или просьба об информации (только ответь в response, не сохраняй)
-• update — ЛЮБОЕ изменение существующего пункта: перенести дату, изменить время, переформулировать, исправить. Триггеры: «перенеси», «сдвинь», «измени», «поменяй», «скорректируй», «замени», «исправь», «вместо X», «не X а Y», «X теперь Y»
-• delete — УДАЛЕНИЕ существующего пункта. Триггеры: «удали», «убери», «не нужен», «отмени», «убрать», «удалить»
-• show_day — ПОКАЗАТЬ план на конкретный день. Это НЕ question! Триггеры: «что на завтра», «план на пятницу», «покажи среду», «что у меня в среду», «что запланировано на 5 июля», «покажи мне день», «что на этой неделе в четверг». Поле date = дата этого дня в формате YYYY-MM-DD
-• show_month — просьба показать план/календарь на конкретный месяц («план на июль», «следующий месяц», «покажи август», «картинка на июнь»). Поле date = первый день этого месяца в формате YYYY-MM-01
+ТИПЫ:
+• plan — дело с конкретной датой/временем («встреча в пятницу», «7 июля», «завтра», «в 15:00»)
+• routine — повторяющееся каждый день или регулярно («каждый день», «по утрам», «всегда»)
+• someday — желание/идея без даты («хочу когда-нибудь», «мечтаю», «было бы классно»)
+• reflection — личные мысли, чувства, дневниковая запись о себе
+• question — пользователь спрашивает что-то у тебя (ответь в response, ничего не сохраняй)
+• delete — удалить существующий пункт. Любые формулировки: «удали», «убери», «не нужно», «отмени», «вычеркни», «убрать», «нет больше», «снимаю», «уже не актуально»
+• update — изменить существующий пункт: дату, время, текст. Любые формулировки: «перенеси», «сдвинь», «поменяй», «измени», «исправь», «теперь в X», «не X а Y», «вместо X», «переноси на», «новое время»
+• show_day — показать что запланировано на конкретный день. НЕ question! Любые формулировки: «что на завтра», «покажи среду», «что у меня сегодня», «мой день», «план на пятницу», «что в субботу», «расскажи про четверг», «что запланировано на 5 июля». Поле date = YYYY-MM-DD
+• show_month — показать месяц целиком. Любые формулировки: «план на июль», «покажи июнь», «следующий месяц», «что в августе». Поле date = YYYY-MM-01
 
-Для типа update — заполняй поля так:
-• old_text = ключевые слова из СТАРОГО пункта (по ним ищем в базе, 1-3 слова)
-• text = НОВЫЙ текст пункта. Если меняется только дата/время — оставь text таким же как old_text (не переформулируй). Если меняется формулировка — напиши новую грамотно.
-• date = НОВАЯ дата если упоминается, иначе пусто
-• time = НОВОЕ время если упоминается, иначе пусто
+ДЛЯ delete:
+• old_text = 1-3 ключевых слова из названия пункта (по ним ищем в базе)
+• Примеры: «удали встречу с врачом» → old_text="встреча врач" | «убери йогу» → old_text="йога" | «отмени психолога» → old_text="психолог"
 
-Примеры update:
-• «перенеси психолога на 10 июля» → old_text="психолог", text="Записаться на сеанс у психолога", date="2026-07-10"
-• «сдвинь УЗИ на среду» → old_text="УЗИ", text="Записаться на УЗИ голеностопа", date=среда этой недели
-• «встреча с мужем не в 15 а в 17» → old_text="встреча муж", text="Встреча с мужем", time="17:00"
-• «замени мастер-класс по глине на урок рисования» → old_text="мастер-класс глина", text="Урок рисования"
+ДЛЯ update:
+• old_text = 1-3 ключевых слова из СТАРОГО пункта
+• text = новый текст (если меняется только дата/время — оставь как старый)
+• date = новая дата если упоминается, иначе ""
+• time = новое время если упоминается, иначе ""
+• Примеры: «перенеси психолога на 10 июля» → old_text="психолог", date="2026-07-10" | «встреча не в 15 а в 17» → old_text="встреча", time="17:00"
 
-Для типа delete:
-• old_text = ключевые слова из пункта который нужно удалить (1-3 слова)
+ДАТЫ: сегодня = {today_str} ({weekday_ru}). Вычисляй остальные сам: «в пятницу», «эта среда», «следующая неделя» и т.д.
+Числа без года — текущий год (следующий если дата прошла).
 
-ДАТЫ:
-• сегодня = {today_str} ({weekday_ru})
-• числа без года → текущий год (или следующий если дата уже прошла)
-• «эта неделя», «в среду», «эта пятница» и т.д. — вычисли дату сам исходя из сегодняшней даты
+ТЕКСТ: пиши грамотно, исправляй ошибки. Для plan — формулируй как действие с глаголом.
 
-ТЕКСТ (поле text): перепиши грамотно и чисто, исправь все ошибки. Для plan — формулируй как действие с глаголом.
-Примеры: «зап на узи голеностоп» → «Записаться на УЗИ голеностопа» | «психолог 16-18» → «Сеанс у психолога» | «посчитать финансы» → «Подвести финансовый итог месяца»
-
-ОТВЕТ (поле response): одно короткое предложение-подтверждение на русском."""
+ОТВЕТ (response): одно короткое живое предложение на русском."""
 
     messages = [{"role": "system", "content": system_prompt}]
     if history:
@@ -214,6 +207,39 @@ def _add_to_history(chat_id: int, user_text: str, bot_reply: str):
     history.append({"role": "assistant", "content": bot_reply})
     if len(history) > MAX_HISTORY_TURNS * 2:
         _chat_history[chat_id] = history[-(MAX_HISTORY_TURNS * 2):]
+
+
+async def _find_item(chat_id: int, keywords: str) -> dict | None:
+    """Find active item by keywords: tries combined match, then each word alone."""
+    sb = get_sb()
+    terms = [w for w in keywords.lower().split() if len(w) > 2]
+    if not terms:
+        return None
+    # Try all keywords in sequence
+    pattern = "%" + "%".join(terms[:3]) + "%"
+    row = await _db(lambda p=pattern: sb.table('items')
+        .select('id, text')
+        .eq('chat_id', chat_id)
+        .eq('status', 'active')
+        .ilike('text', p)
+        .order('created_at', desc=True)
+        .limit(1)
+        .execute())
+    if row.data:
+        return row.data[0]
+    # Try each keyword individually — first match wins
+    for term in terms[:3]:
+        row = await _db(lambda p=f"%{term}%": sb.table('items')
+            .select('id, text')
+            .eq('chat_id', chat_id)
+            .eq('status', 'active')
+            .ilike('text', p)
+            .order('created_at', desc=True)
+            .limit(1)
+            .execute())
+        if row.data:
+            return row.data[0]
+    return None
 
 
 async def process_and_save(chat_id: int, text: str, message: Message):
@@ -325,56 +351,30 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
         if msg_type == "delete":
             old_text = item.get("old_text", "")
-            search_terms = [w for w in old_text.lower().split() if len(w) > 2]
-            if search_terms:
-                like_pattern = "%" + "%".join(search_terms[:3]) + "%"
-                row = await _db(lambda p=like_pattern: sb.table('items')
-                    .select('id')
-                    .eq('chat_id', chat_id)
-                    .eq('status', 'active')
-                    .ilike('text', p)
-                    .order('created_at', desc=True)
-                    .limit(1)
-                    .execute())
-                if row.data:
-                    fid = row.data[0]['id']
-                    await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
-                    saved.append("🗑")
+            found = await _find_item(chat_id, old_text)
+            if found:
+                fid = found['id']
+                await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                saved.append(f"🗑 Удалила: «{found['text']}»")
+            else:
+                saved.append(f"❓ Не нашла «{old_text}» — возможно уже удалено")
         elif msg_type == "update":
             old_text = item.get("old_text", "")
-            search_terms = [w for w in old_text.lower().split() if len(w) > 2]
-            found_id = None
-            if search_terms:
-                like_pattern = "%" + "%".join(search_terms[:3]) + "%"
-                row = await _db(lambda p=like_pattern: sb.table('items')
-                    .select('id')
-                    .eq('chat_id', chat_id)
-                    .eq('status', 'active')
-                    .ilike('text', p)
-                    .order('created_at', desc=True)
-                    .limit(1)
-                    .execute())
-                if row.data:
-                    found_id = row.data[0]['id']
-            if found_id:
+            found = await _find_item(chat_id, old_text)
+            if found:
                 update_data = {}
                 if save_text:
                     update_data['text'] = save_text
-                if item_date is not None:
+                if item_date:
                     update_data['date'] = item_date
-                if item_time is not None:
+                if item_time:
                     update_data['time'] = item_time
-                await _db(lambda fid=found_id, ud=update_data:
-                    sb.table('items').update(ud).eq('id', fid).execute())
-                saved.append("✏️")
+                fid = found['id']
+                await _db(lambda f=fid, ud=update_data:
+                    sb.table('items').update(ud).eq('id', f).execute())
+                saved.append(f"✏️ Обновила: «{found['text']}»")
             else:
-                await _db(lambda st=save_text, d=item_date, t=item_time:
-                    sb.table('items').insert({
-                        'chat_id': chat_id, 'text': st, 'type': 'plan',
-                        'date': d, 'time': t, 'status': 'active',
-                        'created_at': datetime.now().isoformat()
-                    }).execute())
-                saved.append("📅")
+                saved.append(f"❓ Не нашла «{old_text}» для изменения")
         else:
             await _db(lambda st=save_text, mt=msg_type, d=item_date, t=item_time:
                 sb.table('items').insert({
@@ -389,8 +389,8 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         _add_to_history(chat_id, text, response_text)
         return
 
-    icons_line = " ".join(dict.fromkeys(saved))
-    final_reply = f"{icons_line} {response_text}"
+    detail = "\n".join(saved)
+    final_reply = f"{detail}\n\n{response_text}" if response_text else detail
     await message.answer(final_reply)
     _add_to_history(chat_id, text, final_reply)
 
