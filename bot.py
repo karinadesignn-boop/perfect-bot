@@ -257,6 +257,57 @@ async def _find_item(chat_id: int, keywords: str) -> dict | None:
     return None
 
 
+def _quick_intent(text: str, today: date) -> dict | None:
+    """Detect show_day/show_week/show_month from keywords before hitting AI."""
+    t = text.lower()
+
+    WEEK = ['неделю', 'недели', 'неделе', 'неделя', 'на неделю']
+    TODAY = ['сегодня', 'сегодняшн']
+    TOMORROW = ['завтра', 'завтрашн']
+    DAY_NAMES = {
+        'понедельник': 0, 'вторник': 1,
+        'среда': 2, 'среду': 2, 'среде': 2,
+        'четверг': 3, 'четвергу': 3,
+        'пятниц': 4,
+        'суббот': 5,
+        'воскресень': 6,
+    }
+    MONTH_NAMES_RU = {
+        'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4, 'ма': 5,
+        'июн': 6, 'июл': 7, 'август': 8, 'сентябр': 9,
+        'октябр': 10, 'ноябр': 11, 'декабр': 12,
+    }
+    SHOW = ['план', 'покажи', 'скинь', 'вышли', 'выслать', 'расписан',
+            'что у меня', 'что на', 'что в', 'мой день', 'день', 'покажи']
+
+    has_show = any(w in t for w in SHOW)
+
+    if any(w in t for w in WEEK):
+        return {"type": "show_week"}
+
+    if has_show and any(w in t for w in TODAY):
+        return {"type": "show_day", "date": today.strftime('%Y-%m-%d')}
+
+    if has_show and any(w in t for w in TOMORROW):
+        return {"type": "show_day", "date": (today + timedelta(days=1)).strftime('%Y-%m-%d')}
+
+    monday = today - timedelta(days=today.weekday())
+    for name, offset in DAY_NAMES.items():
+        if name in t:
+            d = monday + timedelta(days=offset)
+            if d < today:
+                d += timedelta(days=7)
+            return {"type": "show_day", "date": d.strftime('%Y-%m-%d')}
+
+    if has_show or 'месяц' in t:
+        for name, num in MONTH_NAMES_RU.items():
+            if name in t:
+                yr = today.year if num >= today.month else today.year + 1
+                return {"type": "show_month", "date": f"{yr}-{num:02d}-01"}
+
+    return None
+
+
 async def ai_chat(text: str, history: list[dict] | None = None) -> str:
     messages = [{"role": "system", "content": (
         "Ты умный личный ассистент Карины. Отвечай по-русски, тепло и кратко. "
@@ -282,12 +333,19 @@ async def process_and_save(chat_id: int, text: str, message: Message):
     await bot.send_chat_action(chat_id, ChatAction.TYPING)
 
     history = _chat_history.get(chat_id, [])
-    try:
-        result = await classify_message(text, history)
-    except Exception as e:
-        logging.error(f"AI classify error: {e}")
-        await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
-        return
+
+    # Fast keyword check — catches obvious show queries before AI can misclassify them
+    today_vn = datetime.now(VN_TZ).date()
+    quick = _quick_intent(text, today_vn)
+    if quick:
+        result = {"items": [quick], "response": ""}
+    else:
+        try:
+            result = await classify_message(text, history)
+        except Exception as e:
+            logging.error(f"AI classify error: {e}")
+            await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
+            return
 
     items = result.get("items", [])
     response_text = result.get("response", "Сохранила ✅")
