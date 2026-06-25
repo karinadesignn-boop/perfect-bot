@@ -257,6 +257,23 @@ async def _find_item(chat_id: int, keywords: str) -> dict | None:
     return None
 
 
+async def ai_chat(text: str, history: list[dict] | None = None) -> str:
+    messages = [{"role": "system", "content": (
+        "Ты умный личный ассистент Карины. Отвечай по-русски, тепло и кратко. "
+        "Ты помогаешь с планированием, рефлексией, вопросами — со всем. "
+        "Отвечай как живой человек, не как робот."
+    )}]
+    if history:
+        messages.extend(history[-8:])
+    messages.append({"role": "user", "content": text})
+    resp = await groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=600,
+    )
+    return resp.choices[0].message.content.strip()
+
+
 async def process_and_save(chat_id: int, text: str, message: Message):
     if not groq_client:
         await message.answer("⚠️ ИИ не настроен. Добавь GROQ_API_KEY.")
@@ -275,9 +292,10 @@ async def process_and_save(chat_id: int, text: str, message: Message):
     items = result.get("items", [])
     response_text = result.get("response", "Сохранила ✅")
 
-    if items and all(i.get("type") == "question" for i in items):
-        await message.answer(response_text)
-        _add_to_history(chat_id, text, response_text)
+    if not items or all(i.get("type") == "question" for i in items):
+        reply = await ai_chat(text, _chat_history.get(chat_id, []))
+        await message.answer(reply)
+        _add_to_history(chat_id, text, reply)
         return
 
     for item in items:
