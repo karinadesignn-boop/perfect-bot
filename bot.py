@@ -157,8 +157,8 @@ show_day — пользователь хочет УВИДЕТЬ план на к
 Примеры: «план сегодняшнего дня», «скинь сегодня», «что у меня завтра», «покажи пятницу», «что на этой неделе в среду», «мой день», «что сегодня», «план на 5 июля».
 → date = нужная дата YYYY-MM-DD (сегодня = {today_str})
 
-show_week — пользователь хочет увидеть всю неделю.
-Примеры: «план на неделю», «скинь неделю», «что на этой неделе», «расписание недели».
+show_week — показать неделю картинкой. Примеры: «план на неделю», «скинь неделю», «что на этой неделе».
+show_week_text — показать неделю текстом/списком. Примеры: «план на неделю текстом», «напиши неделю», «список на неделю», «покажи неделю списком».
 
 show_month — пользователь хочет увидеть месяц.
 Примеры: «план на июль», «покажи июнь», «следующий месяц».
@@ -284,9 +284,10 @@ def _quick_intent(text: str, today: date) -> dict | None:
             'день', 'календар', 'посмотр']
 
     has_show = any(w in t for w in SHOW)
+    is_text = any(w in t for w in ['текстом', 'списком', 'напиши', 'без картинки', 'без фото', 'список'])
 
     if any(w in t for w in WEEK):
-        return {"type": "show_week"}
+        return {"type": "show_week_text" if is_text else "show_week"}
 
     if has_show and any(w in t for w in TODAY):
         return {"type": "show_day", "date": today.strftime('%Y-%m-%d')}
@@ -371,6 +372,47 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         return
 
     for item in items:
+        if item.get("type") == "show_week_text":
+            try:
+                now_vn = datetime.now(VN_TZ)
+                today_vn = now_vn.date()
+                monday = today_vn - timedelta(days=today_vn.weekday())
+                days_w = [monday + timedelta(days=i) for i in range(7)]
+                tasks = await _fetch_tasks(chat_id, days_w[0], days_w[-1])
+                sb = get_sb()
+                routines_res = await _db(lambda: sb.table('items')
+                    .select('text')
+                    .eq('chat_id', chat_id)
+                    .eq('type', 'routine')
+                    .eq('status', 'active')
+                    .order('id')
+                    .execute())
+                day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+                header = f"🔮 *план на неделю · {days_w[0].strftime('%d.%m')} — {days_w[-1].strftime('%d.%m')}*"
+                lines = [header]
+                if routines_res.data:
+                    lines += ["", "🐈‍⬛ *ритуалы каждого дня*"]
+                    for r in routines_res.data:
+                        lines.append(f"🧿  {r['text']}")
+                for d in days_w:
+                    ds = d.strftime('%Y-%m-%d')
+                    day_tasks = tasks.get(ds, [])
+                    is_today = (d == today_vn)
+                    marker = " ◀ сегодня" if is_today else ""
+                    lines.append(f"\n🌙 *{day_names[d.weekday()]} · {d.strftime('%d.%m')}*{marker}")
+                    if day_tasks:
+                        for t_item in day_tasks:
+                            lines.append(f"❤️‍🔥  {t_item}")
+                    else:
+                        lines.append("✨ свободно")
+                week_text = "\n".join(lines)
+                await message.answer(week_text, parse_mode="Markdown")
+                _add_to_history(chat_id, text, week_text)
+            except Exception as e:
+                logging.error(f"show_week_text error: {e}")
+                await message.answer(f"❌ Ошибка: {e}")
+            return
+
         if item.get("type") == "show_week":
             if not HAS_MPL:
                 await message.answer("❌ matplotlib не установлен на сервере.")
