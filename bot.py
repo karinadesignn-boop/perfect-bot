@@ -240,18 +240,58 @@ async def _find_item(chat_id: int, keywords: str) -> dict | None:
 
 
 def _quick_intent(text: str, today: date) -> dict | None:
-    """Only intercepts the most unambiguous short view commands. Everything else → AI."""
+    """Catches unambiguous view commands. Everything else → AI."""
     t = text.lower().strip()
-    VIEW = ['скинь', 'покажи', 'вышли', 'пришли', 'отправь']
-    if not any(t.startswith(v) for v in VIEW):
+
+    MONTH_MAP = {
+        'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4,
+        'май': 5, 'мае': 5, 'маю': 5,
+        'июн': 6, 'июл': 7, 'август': 8, 'сентябр': 9,
+        'октябр': 10, 'ноябр': 11, 'декабр': 12,
+    }
+
+    # Explicit save keywords → never intercept, let AI handle
+    SAVE = ['добав', 'запиш', 'внес', 'поставь', 'запланир', 'занеси',
+            'сохрани', 'напомни', 'каждую', 'каждой', 'каждое', 'каждый',
+            'хранилищ', 'практик', 'послани', 'цитат']
+    if any(w in t for w in SAVE):
         return None
+
+    VIEW_VERBS = ['скинь', 'покажи', 'вышли', 'пришли', 'отправь',
+                  'скинуть', 'показать', 'выслать', 'прислать']
+    has_view = any(v in t for v in VIEW_VERBS)
+
     is_text = any(w in t for w in ['текстом', 'списком', 'без картинки'])
-    if any(w in t for w in ['сегодня', 'сегодняшн']):
+
+    # сегодня / завтра — только с явным глаголом просмотра
+    if has_view and any(w in t for w in ['сегодня', 'сегодняшн']):
         return {"type": "show_day", "date": today.strftime('%Y-%m-%d')}
-    if any(w in t for w in ['завтра', 'завтрашн']):
+    if has_view and any(w in t for w in ['завтра', 'завтрашн']):
         return {"type": "show_day", "date": (today + timedelta(days=1)).strftime('%Y-%m-%d')}
+
+    # неделя — с глаголом или без (план на неделю, неделя и т.п.)
     if any(w in t for w in ['неделю', 'недели', 'неделе', 'неделя']):
         return {"type": "show_week_text" if is_text else "show_week"}
+
+    # месяц — с глаголом или через "план на [месяц]"
+    has_month_ctx = has_view or 'план на' in t or 'план ' in t or 'месяц' in t
+    if has_month_ctx:
+        if 'следующ' in t and 'месяц' in t:
+            nm = today.month % 12 + 1
+            yr = today.year + (1 if nm == 1 else 0)
+            return {"type": "show_month", "date": f"{yr}-{nm:02d}-01"}
+        if ('этот месяц' in t or 'текущ' in t) and 'месяц' in t:
+            return {"type": "show_month", "date": f"{today.year}-{today.month:02d}-01"}
+        for name, num in MONTH_MAP.items():
+            if name in t:
+                # "25 июля" = дата для записи, не просмотр месяца
+                idx = t.find(name)
+                before = t[max(0, idx - 4):idx].strip()
+                if before and before[-1].isdigit():
+                    return None
+                yr = today.year if num >= today.month else today.year + 1
+                return {"type": "show_month", "date": f"{yr}-{num:02d}-01"}
+
     return None
 
 
