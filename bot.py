@@ -577,6 +577,16 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         else:
             category = item.get("category") if msg_type == "inbox" else None
             store_time = category if category else item_time
+
+            # Duplicate check: same type + same text + same date → skip
+            dup_q = sb.table('items').select('id').eq('chat_id', chat_id).eq('type', msg_type).eq('status', 'active').ilike('text', save_text)
+            if item_date:
+                dup_q = dup_q.eq('date', item_date)
+            dup = await _db(lambda q=dup_q: q.limit(1).execute())
+            if dup.data:
+                saved.append(f"↩️ уже есть: «{save_text}»")
+                continue
+
             await _db(lambda st=save_text, mt=msg_type, d=item_date, t=store_time:
                 sb.table('items').insert({
                     'chat_id': chat_id, 'text': st, 'type': mt,
