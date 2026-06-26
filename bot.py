@@ -150,8 +150,13 @@ async def classify_message(text: str, history: list[dict] | None = None, inbox_c
 • Хочет увидеть неделю текстом → show_week_text
 • Хочет увидеть месяц → show_month (date=YYYY-MM-01)
 • Общий вопрос не про планы → question
-• Удалить что-то → delete (old_text = ключевые слова)
+• Удалить конкретное дело → delete (old_text = ключевые слова)
+• Удалить ВСЁ на конкретный день → delete_day (date = YYYY-MM-DD)
 • Изменить/перенести → update (old_text = ключевые слова старого)
+
+delete_day — когда хочет убрать всё с конкретного дня, очистить день.
+Примеры: «убери всё на 25 июля», «очисти 25 июля», «удали всё с пятницы», «убери все планы на завтра», «сотри всё на эту среду».
+→ date = YYYY-MM-DD
 
 ═══ ПРИМЕРЫ РАЗБОРА ═══
 «28 июня внеси в план: записаться к врачу» → plan, date=2026-06-28, text="записаться к врачу"
@@ -163,6 +168,8 @@ async def classify_message(text: str, history: list[dict] | None = None, inbox_c
 «что у меня на этой неделе» → show_week
 «покажи июль» → show_month, date=2026-07-01
 «удали встречу с врачом» → delete, old_text="встреча врач"
+«убери всё на 25 июля» → delete_day, date=2026-07-25
+«убери все планы на завтра» → delete_day, date={tomorrow}
 «перенеси йогу на пятницу» → update, old_text="йога", date=ближайшая пятница
 
 ═══ КАТЕГОРИИ ИНБОКСА ═══
@@ -547,6 +554,26 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 }).execute())
             day_names_short = ['пн','вт','ср','чт','пт','сб','вс']
             saved.append(f"🔄 Каждое {day_names_short[int(dow)]}: «{save_text}»")
+
+        elif msg_type == "delete_day":
+            target_date = item.get("date", item_date)
+            if target_date:
+                rows_del = await _db(lambda d=target_date: sb.table('items')
+                    .select('id, text')
+                    .eq('chat_id', chat_id)
+                    .eq('type', 'plan')
+                    .eq('status', 'active')
+                    .eq('date', d)
+                    .execute())
+                if rows_del.data:
+                    for r in rows_del.data:
+                        rid = r['id']
+                        await _db(lambda f=rid: sb.table('items').delete().eq('id', f).execute())
+                    saved.append(f"🗑 Удалила {len(rows_del.data)} пл. на {target_date}")
+                else:
+                    saved.append(f"✨ На {target_date} и так ничего не было")
+            else:
+                saved.append("❓ Не поняла какой день очистить")
 
         elif msg_type == "delete":
             old_text = item.get("old_text", "")
