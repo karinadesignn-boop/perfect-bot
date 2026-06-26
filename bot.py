@@ -189,9 +189,9 @@ response = короткое подтверждение по-русски."""
     messages.append({"role": "user", "content": text})
 
     response = await groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=messages,
-        max_tokens=1500,
+        max_tokens=800,
         response_format={"type": "json_object"},
     )
 
