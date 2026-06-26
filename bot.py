@@ -113,7 +113,7 @@ def simple_keyboard(item_id: int) -> InlineKeyboardMarkup:
 
 # ---------- ИИ-РОУТЕР ----------
 
-async def classify_message(text: str, history: list[dict] | None = None) -> dict:
+async def classify_message(text: str, history: list[dict] | None = None, inbox_cats: list[str] | None = None) -> dict:
     now_vn = datetime.now(VN_TZ)
     today_date = now_vn.date()
     today_str = today_date.strftime('%Y-%m-%d')
@@ -161,9 +161,23 @@ weekly — еженедельная задача в конкретный ден�
 someday — идея/мечта без даты.
 Примеры: «хочу когда-нибудь», «было бы здорово».
 
+inbox — задача без даты и срока, требует разбора позже. При сохранении ОБЯЗАТЕЛЬНО определи категорию из списка пользователя и запиши в поле category. Если не подходит ни одна — выбери ближайшую по смыслу.
+
+add_category — добавить новую категорию инбокса.
+Примеры: «добавь категорию финансы», «создай категорию работа», «хочу категорию путешествия».
+→ text = название новой категории
+
+remove_category — удалить категорию инбокса.
+Примеры: «удали категорию здоровье», «убери категорию отношения».
+→ old_text = название категории которую удалить
+
 
 question — ТОЛЬКО общие вопросы к тебе НЕ про планы. («что такое медитация», «как похудеть»).
 ❌ НЕЛЬЗЯ использовать question если речь идёт о планах/расписании пользователя — это всегда show_day/show_week/show_month!
+
+═══ КАТЕГОРИИ ИНБОКСА ═══
+{', '.join(f'"{c}"' for c in (inbox_cats or DEFAULT_INBOX_CATEGORIES))}
+Для типа inbox: поле category = одна из категорий выше (самая подходящая по смыслу).
 
 ═══ ДАТЫ ═══
 Сегодня = {today_str} ({weekday_ru}). Остальные даты вычисляй сам из этой.
@@ -336,8 +350,9 @@ async def process_and_save(chat_id: int, text: str, message: Message):
     if quick:
         result = {"items": [quick], "response": ""}
     else:
+        inbox_cats = await get_inbox_categories(chat_id)
         try:
-            result = await classify_message(text, history)
+            result = await classify_message(text, history, inbox_cats)
         except Exception as e:
             logging.error(f"AI classify error: {e}")
             await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
@@ -497,7 +512,38 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         item_date = item.get("date")
         item_time = item.get("time")
 
-        if msg_type == "weekly":
+        if msg_type == "add_category":
+            cat_name = save_text.strip()
+            await _db(lambda c=cat_name: sb.table('items').insert({
+                'chat_id': chat_id, 'text': c, 'type': 'inbox_category',
+                'status': 'active', 'created_at': datetime.now().isoformat()
+            }).execute())
+            saved.append(f"✅ Категория добавлена: «{cat_name}»")
+
+        elif msg_type == "remove_category":
+            old_text = item.get("old_text", save_text)
+            found = await _find_item(chat_id, old_text)
+            if found and found.get('type') == 'inbox_category':
+                fid = found['id']
+                await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                saved.append(f"🗑 Категория удалена: «{found['text']}»")
+            else:
+                # try direct text match among inbox_category
+                rows_cat = await _db(lambda ot=old_text: sb.table('items')
+                    .select('id, text')
+                    .eq('chat_id', chat_id)
+                    .eq('type', 'inbox_category')
+                    .ilike('text', f'%{ot}%')
+                    .limit(1)
+                    .execute())
+                if rows_cat.data:
+                    fid = rows_cat.data[0]['id']
+                    await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                    saved.append(f"🗑 Категория удалена: «{rows_cat.data[0]['text']}»")
+                else:
+                    saved.append(f"❓ Категория «{old_text}» не найдена")
+
+        elif msg_type == "weekly":
             dow = item.get("day_of_week", 6)
             await _db(lambda st=save_text, d=dow:
                 sb.table('items').insert({
@@ -535,13 +581,16 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             else:
                 saved.append(f"❓ Не нашла «{old_text}» для изменения")
         else:
-            await _db(lambda st=save_text, mt=msg_type, d=item_date, t=item_time:
+            category = item.get("category") if msg_type == "inbox" else None
+            store_time = category if category else item_time
+            await _db(lambda st=save_text, mt=msg_type, d=item_date, t=store_time:
                 sb.table('items').insert({
                     'chat_id': chat_id, 'text': st, 'type': mt,
                     'date': d, 'time': t, 'status': 'active',
                     'created_at': datetime.now().isoformat()
                 }).execute())
-            saved.append(icons.get(msg_type, "📥"))
+            cat_note = f" → «{category}»" if category else ""
+            saved.append(f"{icons.get(msg_type, '📥')}{cat_note}")
 
     if not saved:
         await message.answer(response_text)
@@ -684,26 +733,78 @@ async def someday_cmd(message: Message):
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
-@dp.message(Command("inbox"))
-async def inbox_cmd(message: Message):
+DEFAULT_INBOX_CATEGORIES = ['рефлексия/психология', 'мой ум/обучение', 'здоровье', 'отношения']
+
+
+async def get_inbox_categories(chat_id: int) -> list[str]:
     sb = get_sb()
     rows = await _db(lambda: sb.table('items')
-        .select('*')
-        .eq('chat_id', message.chat.id)
-        .eq('type', 'inbox')
+        .select('text')
+        .eq('chat_id', chat_id)
+        .eq('type', 'inbox_category')
         .eq('status', 'active')
-        .order('id', desc=True)
-        .limit(10)
+        .order('created_at')
         .execute())
+    if rows.data:
+        return [r['text'] for r in rows.data]
+    for cat in DEFAULT_INBOX_CATEGORIES:
+        await _db(lambda c=cat: sb.table('items').insert({
+            'chat_id': chat_id, 'text': c, 'type': 'inbox_category',
+            'status': 'active', 'created_at': datetime.now().isoformat()
+        }).execute())
+    return DEFAULT_INBOX_CATEGORIES
 
+
+@dp.message(Command("inbox"))
+async def inbox_cmd(message: Message):
+    cats = await get_inbox_categories(message.chat.id)
+    kb = InlineKeyboardBuilder()
+    for cat in cats:
+        kb.button(text=cat, callback_data=f"incat:{cat[:40]}")
+    kb.button(text="📋 все", callback_data="incat:__all__")
+    kb.adjust(2)
+    await message.answer(
+        "📥 *Инбокс* — выбери категорию:",
+        reply_markup=kb.as_markup(),
+        parse_mode="Markdown"
+    )
+
+
+@dp.callback_query(F.data.startswith("incat:"))
+async def inbox_category_cb(callback: CallbackQuery):
+    cat = callback.data[len("incat:"):]
+    chat_id = callback.from_user.id
+    sb = get_sb()
+    if cat == '__all__':
+        rows = await _db(lambda: sb.table('items')
+            .select('text, time')
+            .eq('chat_id', chat_id)
+            .eq('type', 'inbox')
+            .eq('status', 'active')
+            .order('created_at', desc=True)
+            .limit(30)
+            .execute())
+        label = "все"
+    else:
+        rows = await _db(lambda c=cat: sb.table('items')
+            .select('text, time')
+            .eq('chat_id', chat_id)
+            .eq('type', 'inbox')
+            .eq('status', 'active')
+            .eq('time', c)
+            .order('created_at', desc=True)
+            .limit(30)
+            .execute())
+        label = cat
     if not rows.data:
-        await message.answer("Инбокс пуст 🎉")
-        return
-
-    lines = ["📥 *инбокс*", ""]
-    for r in rows.data:
-        lines.append(f"❤️‍🔥  {r['text']}")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+        await callback.message.answer(f"В «{label}» пока пусто ✨")
+    else:
+        lines = [f"📥 *{label}*", ""]
+        for r in rows.data:
+            cat_tag = f"  _[{r['time']}]_" if cat == '__all__' and r.get('time') else ""
+            lines.append(f"❤️‍🔥  {r['text']}{cat_tag}")
+        await callback.message.answer("\n".join(lines), parse_mode="Markdown")
+    await callback.answer()
 
 
 
