@@ -200,12 +200,20 @@ date = YYYY-MM-DD
 «удали все планы на завтра» → date={tomorrow}
 «сотри всё с воскресенья» → date={_this_sun}
 
-▶ update — изменить/перенести существующее дело
-old_text = ключевые слова старого, date/time = новые значения
+▶ update — изменить/перенести/скорректировать существующее дело
+Слова-триггеры: «измени», «поменяй», «скорректируй», «исправь», «перенеси», «сдвинь», «вместо», «теперь», «будет», «не в X а в Y»
+old_text = ключевые слова для поиска дела, date/time = новые значения
+Время в формате «16-18:00» или «с 16 до 18» → time="16:00"
 Примеры:
 «перенеси йогу на пятницу» → old_text="йога", date={_this_fri}
 «сдвинь встречу на 17:00» → old_text="встреча", time="17:00"
 «вместо врача в среду поставь в четверг» → old_text="врач", date=ближайший четверг
+«завтра событие измени по времени. будет 16-18:00» → old_text="событие", time="16:00"
+«поменяй время встречи на 15:00» → old_text="встреча", time="15:00"
+«йога теперь в 9 утра» → old_text="йога", time="09:00"
+«звонок перенеси на следующую пятницу» → old_text="звонок", date=следующая пятница
+«исправь время созвона — будет в 11» → old_text="созвон", time="11:00"
+«скорректируй встречу: теперь в четверг в 14» → old_text="встреча", date=ближайший четверг, time="14:00"
 
 ▶ inbox — дело без даты, разобрать потом (+ category из списка ниже)
 ▶ someday — идея/мечта без срока: «хочу когда-нибудь», «было бы здорово»
@@ -263,37 +271,36 @@ def _add_to_history(chat_id: int, user_text: str, bot_reply: str):
         _chat_history[chat_id] = history[-(MAX_HISTORY_TURNS * 2):]
 
 
-async def _find_item(chat_id: int, keywords: str) -> dict | None:
-    """Find active item by keywords: tries combined match, then each word alone."""
+async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None) -> dict | None:
+    """Find active item by keywords. hint_date narrows search to that date first."""
     sb = get_sb()
-    terms = [w for w in keywords.lower().split() if len(w) > 2]
+    terms = [w for w in keywords.lower().split() if len(w) > 1]
     if not terms:
         return None
-    # Try all keywords in sequence
-    pattern = "%" + "%".join(terms[:3]) + "%"
-    row = await _db(lambda p=pattern: sb.table('items')
-        .select('id, text')
-        .eq('chat_id', chat_id)
-        .eq('status', 'active')
-        .ilike('text', p)
-        .order('created_at', desc=True)
-        .limit(1)
-        .execute())
-    if row.data:
-        return row.data[0]
-    # Try each keyword individually — first match wins
-    for term in terms[:3]:
-        row = await _db(lambda p=f"%{term}%": sb.table('items')
-            .select('id, text')
-            .eq('chat_id', chat_id)
-            .eq('status', 'active')
-            .ilike('text', p)
-            .order('created_at', desc=True)
-            .limit(1)
-            .execute())
-        if row.data:
-            return row.data[0]
-    return None
+
+    async def _search(extra_filter=None):
+        for pattern in [
+            "%" + "%".join(terms[:3]) + "%",
+            *[f"%{t}%" for t in terms[:4]]
+        ]:
+            q = (sb.table('items').select('id, text')
+                 .eq('chat_id', chat_id).eq('status', 'active')
+                 .ilike('text', pattern).order('created_at', desc=True).limit(1))
+            if extra_filter:
+                q = extra_filter(q)
+            row = await _db(lambda _q=q: _q.execute())
+            if row.data:
+                return row.data[0]
+        return None
+
+    # 1) With date hint (most specific)
+    if hint_date:
+        found = await _search(lambda q: q.eq('date', hint_date))
+        if found:
+            return found
+
+    # 2) Without date filter
+    return await _search()
 
 
 def _parse_date_from_text(t: str, today: date) -> date | None:
@@ -668,15 +675,17 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 saved.append(f"❓ Не нашла «{old_text}» — возможно уже удалено")
         elif msg_type == "update":
             old_text = item.get("old_text", "")
-            found = await _find_item(chat_id, old_text)
+            # Use current date as hint when AI says "завтра событие" — item is on that date
+            hint = item.get("date") or item_date
+            found = await _find_item(chat_id, old_text, hint_date=hint)
             if found:
                 update_data = {}
-                if save_text:
-                    update_data['text'] = save_text
                 if item_date:
                     update_data['date'] = item_date
                 if item_time:
                     update_data['time'] = item_time
+                if save_text and save_text != old_text:
+                    update_data['text'] = save_text
                 fid = found['id']
                 await _db(lambda f=fid, ud=update_data:
                     sb.table('items').update(ud).eq('id', f).execute())
