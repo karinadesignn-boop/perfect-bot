@@ -219,6 +219,7 @@ old_text = ключевые слова для поиска дела, date/time =
 ▶ someday — идея/мечта без срока: «хочу когда-нибудь», «было бы здорово»
 ▶ reminder — духовная фраза/послание: «в хранилище: текст», «добавь цитату»
 ▶ practice — телесная практика: «добавь практику: описание»
+▶ lifehack — лайфхак/полезная информация: «добавь лайфхак», «сохрани в лайфхаки», «запиши лайфхак», «в лайфхаки:»
 ▶ add_category — новая категория инбокса: «добавь категорию финансы»
 ▶ remove_category — удалить категорию: «убери категорию здоровье»
 ▶ question — ТОЛЬКО общий вопрос не про планы («что такое медитация»)
@@ -633,6 +634,14 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             }).execute())
             saved.append(f"🌿 Практика сохранена: «{save_text}»")
 
+        elif msg_type == "lifehack":
+            await _db(lambda st=save_text: sb.table('items').insert({
+                'chat_id': chat_id, 'text': st, 'type': 'lifehack',
+                'date': None, 'time': None, 'status': 'active',
+                'created_at': datetime.now().isoformat()
+            }).execute())
+            saved.append(f"💡 Лайфхак сохранён: «{save_text}»")
+
         elif msg_type == "weekly":
             dow = item.get("day_of_week", 6)
             await _db(lambda st=save_text, d=dow:
@@ -779,6 +788,7 @@ async def start(message: Message):
         "📥 /inbox — необработанные записи\n"
         "🔮 /reminders — послания и фразы\n"
         "🌿 /practices — телесные практики\n"
+        "💡 /lifehacks — лайфхаки\n"
         "/help — как пользоваться"
     )
 
@@ -894,6 +904,26 @@ async def practices_cmd(message: Message):
     lines = ["🌿 *телесные практики*", ""]
     for r in rows.data:
         lines.append(f"🧿  {r['text']}")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@dp.message(Command("lifehacks"))
+async def lifehacks_cmd(message: Message):
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('text')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'lifehack')
+        .eq('status', 'active')
+        .order('created_at', desc=True)
+        .limit(100)
+        .execute())
+    if not rows.data:
+        await message.answer("Лайфхаков пока нет 💡\n\nДобавь: «лайфхак: текст» или «добавь лайфхак: ...»")
+        return
+    lines = ["💡 *лайфхаки*", ""]
+    for i, r in enumerate(rows.data, 1):
+        lines.append(f"{i}. {r['text']}")
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
@@ -1586,6 +1616,7 @@ async def main():
         {"command": "inbox",       "description": "📥 Необработанные записи"},
         {"command": "reminders",   "description": "🔮 Послания и фразы"},
         {"command": "practices",   "description": "🌿 Телесные практики"},
+        {"command": "lifehacks",   "description": "💡 Лайфхаки"},
         {"command": "help",        "description": "❓ Как пользоваться"},
     ])
     asyncio.create_task(scheduler_wrapper())
