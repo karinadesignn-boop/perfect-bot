@@ -626,9 +626,7 @@ async def help_cmd(message: Message):
 
 @dp.message(Command("routines"))
 async def routines_cmd(message: Message):
-    today = datetime.now(VN_TZ).strftime('%Y-%m-%d')
     sb = get_sb()
-
     rows = await _db(lambda: sb.table('items')
         .select('*')
         .eq('chat_id', message.chat.id)
@@ -638,23 +636,30 @@ async def routines_cmd(message: Message):
         .execute())
 
     if not rows.data:
-        await message.answer("Рутин пока нет.\n\nНапиши например: «каждый день медитация 10 минут»")
+        await message.answer("Рутин пока нет 🌙\n\nНапиши например: «каждый день медитация»")
         return
 
-    done_rows = await _db(lambda: sb.table('routine_log')
-        .select('item_id')
-        .eq('chat_id', message.chat.id)
-        .eq('date', today)
-        .execute())
-    done_ids = {r['item_id'] for r in done_rows.data}
-
     day_names_full = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+    daily, weekly = [], {}
     for r in rows.data:
-        icon = "✅" if r['id'] in done_ids else "⬜️"
-        kb = None if r['id'] in done_ids else routine_keyboard(r['id'], today)
         t = r.get('time') or ''
-        label = f"[каждое {day_names_full[int(t[4:])]}] {r['text']}" if t.startswith('dow:') else r['text']
-        await message.answer(f"{icon} {label}", reply_markup=kb)
+        if t.startswith('dow:'):
+            dow = int(t[4:])
+            weekly.setdefault(dow, []).append(r['text'])
+        else:
+            daily.append(r['text'])
+
+    lines = ["🐈‍⬛ *мои ритуалы*", ""]
+    if daily:
+        lines.append("🌙 *каждый день*")
+        for item in daily:
+            lines.append(f"🧿  {item}")
+    for dow in sorted(weekly):
+        lines.append(f"\n🌙 *каждое {day_names_full[dow].lower()}*")
+        for item in weekly[dow]:
+            lines.append(f"🧿  {item}")
+
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 @dp.message(Command("someday"))
@@ -670,11 +675,13 @@ async def someday_cmd(message: Message):
         .execute())
 
     if not rows.data:
-        await message.answer("Список «когда-нибудь» пуст.\n\nНапиши например: «хочу поехать на Бали»")
+        await message.answer("Список «когда-нибудь» пуст 🌙\n\nНапиши например: «хочу поехать на Бали»")
         return
 
+    lines = ["🔮 *когда-нибудь*", ""]
     for r in rows.data:
-        await message.answer(f"🌙 {r['text']}", reply_markup=simple_keyboard(r['id']))
+        lines.append(f"🌙  {r['text']}")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 @dp.message(Command("inbox"))
@@ -693,8 +700,10 @@ async def inbox_cmd(message: Message):
         await message.answer("Инбокс пуст 🎉")
         return
 
+    lines = ["📥 *инбокс*", ""]
     for r in rows.data:
-        await message.answer(f"📥 {r['text']}", reply_markup=simple_keyboard(r['id']))
+        lines.append(f"❤️‍🔥  {r['text']}")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 
