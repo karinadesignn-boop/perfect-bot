@@ -171,6 +171,14 @@ remove_category — удалить категорию инбокса.
 Примеры: «удали категорию здоровье», «убери категорию отношения».
 → old_text = название категории которую удалить
 
+reminder — духовная/вдохновляющая фраза или послание для хранилища.
+Триггеры: «в хранилище», «закинь фразу», «добавь послание», «сохрани фразу», «добавь цитату», «добавь в хранилище», «хранилище».
+→ text = текст фразы/послания ДОСЛОВНО
+
+practice — телесная практика для хранилища практик.
+Триггеры: «добавь практику», «сохрани практику», «добавь телесную практику», «в практики», «запиши практику».
+→ text = описание практики ДОСЛОВНО
+
 
 question — ТОЛЬКО общие вопросы к тебе НЕ про планы. («что такое медитация», «как похудеть»).
 ❌ НЕЛЬЗЯ использовать question если речь идёт о планах/расписании пользователя — это всегда show_day/show_week/show_month!
@@ -278,7 +286,7 @@ def _quick_intent(text: str, today: date) -> dict | None:
 
     has_show = any(w in t for w in SHOW)
     is_text = any(w in t for w in ['текстом', 'списком', 'напиши', 'без картинки', 'без фото', 'список'])
-    is_save = any(w in t for w in ['добав', 'запиш', 'каждую', 'каждой', 'каждое', 'каждый', 'повтор', 'еженедел'])
+    is_save = any(w in t for w in ['добав', 'запиш', 'каждую', 'каждой', 'каждое', 'каждый', 'повтор', 'еженедел', 'хранилищ', 'практик', 'послани', 'цитат', 'фраз'])
 
     if any(w in t for w in WEEK) and not is_save:
         return {"type": "show_week_text" if is_text else "show_week"}
@@ -543,6 +551,22 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 else:
                     saved.append(f"❓ Категория «{old_text}» не найдена")
 
+        elif msg_type == "reminder":
+            await _db(lambda st=save_text: sb.table('items').insert({
+                'chat_id': chat_id, 'text': st, 'type': 'reminder',
+                'date': None, 'time': None, 'status': 'active',
+                'created_at': datetime.now().isoformat()
+            }).execute())
+            saved.append(f"🔮 В хранилище: «{save_text}»")
+
+        elif msg_type == "practice":
+            await _db(lambda st=save_text: sb.table('items').insert({
+                'chat_id': chat_id, 'text': st, 'type': 'practice',
+                'date': None, 'time': None, 'status': 'active',
+                'created_at': datetime.now().isoformat()
+            }).execute())
+            saved.append(f"🌿 Практика сохранена: «{save_text}»")
+
         elif msg_type == "weekly":
             dow = item.get("day_of_week", 6)
             await _db(lambda st=save_text, d=dow:
@@ -655,6 +679,8 @@ async def start(message: Message):
         "🔄 /routines — ежедневные рутины\n"
         "🌙 /someday — список «когда-нибудь»\n"
         "📥 /inbox — необработанные записи\n"
+        "🔮 /reminders — послания и фразы\n"
+        "🌿 /practices — телесные практики\n"
         "/help — как пользоваться"
     )
 
@@ -730,6 +756,46 @@ async def someday_cmd(message: Message):
     lines = ["🔮 *когда-нибудь*", ""]
     for r in rows.data:
         lines.append(f"🌙  {r['text']}")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@dp.message(Command("reminders"))
+async def reminders_cmd(message: Message):
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('text')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'reminder')
+        .eq('status', 'active')
+        .order('created_at', desc=True)
+        .limit(50)
+        .execute())
+    if not rows.data:
+        await message.answer("Хранилище посланий пустое 🔮\n\nДобавь: «в хранилище: твоя фраза»")
+        return
+    lines = ["🔮 *мои послания*", ""]
+    for r in rows.data:
+        lines.append(f"✨  {r['text']}")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@dp.message(Command("practices"))
+async def practices_cmd(message: Message):
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('text')
+        .eq('chat_id', message.chat.id)
+        .eq('type', 'practice')
+        .eq('status', 'active')
+        .order('created_at', desc=True)
+        .limit(50)
+        .execute())
+    if not rows.data:
+        await message.answer("Хранилище практик пустое 🌿\n\nДобавь: «добавь практику: описание»")
+        return
+    lines = ["🌿 *телесные практики*", ""]
+    for r in rows.data:
+        lines.append(f"🧿  {r['text']}")
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
@@ -1254,6 +1320,31 @@ async def handle_message(message: Message):
     await process_and_save(message.chat.id, message.text, message)
 
 
+# ---------- ХРАНИЛИЩЕ НАПОМИНАНИЙ ----------
+
+REMINDER_EMOJIS = ['🔮', '🌙', '✨', '🧿', '❤️‍🔥', '🐈‍⬛']
+REMINDER_HOURS = {8, 10, 12, 14, 16, 18, 20}
+
+
+async def send_random_reminder(chat_id: int):
+    sb = get_sb()
+    rows = await _db(lambda: sb.table('items')
+        .select('text, type')
+        .eq('chat_id', chat_id)
+        .in_('type', ['reminder', 'practice'])
+        .eq('status', 'active')
+        .execute())
+    if not rows.data:
+        return
+    item = random.choice(rows.data)
+    if item['type'] == 'practice':
+        msg = f"🌿 *практика*\n\n{item['text']}"
+    else:
+        emoji = random.choice(REMINDER_EMOJIS)
+        msg = f"{emoji}\n\n_{item['text']}_"
+    await bot.send_message(chat_id, msg, parse_mode="Markdown")
+
+
 # ---------- ВЕЧЕРНИЙ ПЛАН ----------
 
 async def send_evening_plan(chat_id: int):
@@ -1308,6 +1399,7 @@ async def send_evening_plan(chat_id: int):
 async def scheduler_loop():
     sent_evening: set[str] = set()
     sent_plans: set[str] = set()
+    sent_reminders: set[str] = set()
 
     while True:
         try:
@@ -1315,6 +1407,17 @@ async def scheduler_loop():
             vn_date = now_vn.strftime('%Y-%m-%d')
             vn_hour = now_vn.hour
             vn_hhmm = now_vn.strftime('%H:%M')
+
+            # Random reminder/practice every 2 hours
+            reminder_key = f"reminder:{vn_date}:{vn_hour}"
+            if vn_hour in REMINDER_HOURS and reminder_key not in sent_reminders:
+                sent_reminders.add(reminder_key)
+                logging.info(f"Sending random reminder, VN time: {vn_hhmm}")
+                for chat_id in await get_all_users():
+                    try:
+                        await send_random_reminder(chat_id)
+                    except Exception as e:
+                        logging.error(f"Reminder error {chat_id}: {e}")
 
             # Evening plan at 22:xx VN
             evening_key = f"evening:{vn_date}"
@@ -1356,6 +1459,8 @@ async def scheduler_loop():
                 sent_evening.clear()
             if len(sent_plans) > 2000:
                 sent_plans.clear()
+            if len(sent_reminders) > 500:
+                sent_reminders.clear()
 
         except Exception as e:
             logging.error(f"Scheduler loop error: {e}")
@@ -1380,6 +1485,8 @@ async def main():
         {"command": "routines",    "description": "🔄 Ежедневные рутины"},
         {"command": "someday",     "description": "🌙 Список «когда-нибудь»"},
         {"command": "inbox",       "description": "📥 Необработанные записи"},
+        {"command": "reminders",   "description": "🔮 Послания и фразы"},
+        {"command": "practices",   "description": "🌿 Телесные практики"},
         {"command": "help",        "description": "❓ Как пользоваться"},
     ])
     asyncio.create_task(scheduler_wrapper())
