@@ -150,12 +150,18 @@ delete_day — удалить ВСЕ дела на конкретный день
 date=YYYY-MM-DD.
 
 show_day — показать план конкретного дня.
-Когда: пользователь хочет увидеть/посмотреть что запланировано на день.
+Когда: пользователь хочет увидеть/посмотреть/узнать что запланировано на день. Любые формулировки: «план на сегодня», «что у меня сегодня», «мой день», «что завтра», «покажи день», «что запланировано на {дату}».
 date=YYYY-MM-DD.
 
 show_week — показать план недели картинкой.
+Когда: «неделя», «эта неделя», «план на неделю», «что на этой неделе», «расписание недели».
+
 show_week_text — показать план недели текстом/списком.
-show_month — показать план месяца картинкой. date=YYYY-MM-01.
+Когда: то же что show_week, но пользователь просит текст, список, без картинки.
+
+show_month — показать план месяца картинкой.
+Когда: «план на июль», «июль», «июльский план», «покажи месяц», «что в июне».
+date=YYYY-MM-01.
 
 routine — ежедневная привычка (каждый день без исключений).
 weekly — привычка в конкретный день недели. day_of_week: 0=пн,1=вт,2=ср,3=чт,4=пт,5=сб,6=вс. Несколько дел → несколько объектов.
@@ -258,6 +264,65 @@ async def ai_chat(text: str, history: list[dict] | None = None) -> str:
     return resp.choices[0].message.content.strip()
 
 
+import re as _re
+
+# (stem_for_search, stem_for_digit_check, month_number)
+_MONTHS = [
+    ('январ', 'янв', 1), ('феврал', 'фев', 2), ('март', 'мар', 3), ('апрел', 'апр', 4),
+    ('май|мая|маю', 'май', 5), ('июн', 'июн', 6), ('июл', 'июл', 7), ('август', 'авг', 8),
+    ('сентябр', 'сен', 9), ('октябр', 'окт', 10), ('ноябр', 'ноя', 11), ('декабр', 'дек', 12),
+]
+
+_SAVE_VERBS = ('добав', 'запис', 'занес', 'внес', 'поставь', 'сохран', 'создай',
+               'удал', 'убер', 'убри', 'скорректир', 'измени', 'перенес', 'исправ')
+
+
+def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
+    """Fast path for show-only requests. Returns classify-format result or None.
+    Only intercepts clear view requests — save/update/delete always go to AI."""
+    try:
+        t = text.lower().strip()
+
+        if any(v in t for v in _SAVE_VERBS):
+            return None
+
+        # show_week
+        if _re.search(r'недел[юяеи]|на этой неделе|план недел', t):
+            if 'текст' in t or 'список' in t:
+                return {"items": [{"type": "show_week_text"}], "response": "Вот план недели:"}
+            return {"items": [{"type": "show_week"}], "response": "Вот план недели:"}
+
+        # show_month — month name without preceding digit
+        now_vn = datetime.now(VN_TZ)
+        for search_pat, digit_check, num in _MONTHS:
+            if _re.search(search_pat, t):
+                if _re.search(r'\d\s*' + digit_check, t):
+                    return None
+                yr = now_vn.year
+                return {"items": [{"type": "show_month", "date": f"{yr}-{num:02d}-01"}],
+                        "response": "Вот план месяца:"}
+
+        # show_day
+        show_words = ('покажи', 'что у меня', 'что запланировано', 'мой план', 'расписани', 'план на день')
+        has_show = any(w in t for w in show_words) or t.startswith('план')
+        has_today = 'сегодня' in t
+        has_tomorrow = 'завтра' in t
+
+        if has_show and has_today:
+            return {"items": [{"type": "show_day", "date": today_str}], "response": "Вот план на сегодня:"}
+        if has_show and has_tomorrow:
+            return {"items": [{"type": "show_day", "date": tomorrow_str}], "response": "Вот план на завтра:"}
+        if _re.fullmatch(r'(план\s*)?(на\s*)?(сегодня|today)\??', t):
+            return {"items": [{"type": "show_day", "date": today_str}], "response": "Вот план на сегодня:"}
+        if _re.fullmatch(r'(план\s*)?(на\s*)?(завтра|tomorrow)\??', t):
+            return {"items": [{"type": "show_day", "date": tomorrow_str}], "response": "Вот план на завтра:"}
+
+        return None
+    except Exception as e:
+        logging.warning(f"_quick_intent error (falling back to AI): {e}")
+        return None
+
+
 async def process_and_save(chat_id: int, text: str, message: Message):
     if not groq_client:
         await message.answer("⚠️ ИИ не настроен. Добавь GROQ_API_KEY.")
@@ -267,13 +332,20 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
     history = _chat_history.get(chat_id, [])
 
-    inbox_cats = await get_inbox_categories(chat_id)
-    try:
-        result = await classify_message(text, history, inbox_cats)
-    except Exception as e:
-        logging.error(f"AI classify error: {e}")
-        await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
-        return
+    now_vn = datetime.now(VN_TZ)
+    today_str = now_vn.date().strftime('%Y-%m-%d')
+    tomorrow_str = (now_vn.date() + timedelta(days=1)).strftime('%Y-%m-%d')
+    quick = _quick_intent(text, today_str, tomorrow_str)
+    if quick:
+        result = quick
+    else:
+        inbox_cats = await get_inbox_categories(chat_id)
+        try:
+            result = await classify_message(text, history, inbox_cats)
+        except Exception as e:
+            logging.error(f"AI classify error: {e}", exc_info=True)
+            await message.answer(f"❌ Ошибка ИИ: {type(e).__name__}: {e}")
+            return
 
     items = result.get("items", [])
     response_text = result.get("response", "Сохранила ✅")
