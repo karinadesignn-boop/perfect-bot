@@ -246,8 +246,36 @@ async def _find_item(chat_id: int, keywords: str) -> dict | None:
     return None
 
 
+def _parse_date_from_text(t: str, today: date) -> date | None:
+    """Extract a specific date from text like '25 июля', 'сегодня', 'завтра'."""
+    MONTH_MAP = {
+        'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4,
+        'май': 5, 'мае': 5, 'маю': 5,
+        'июн': 6, 'июл': 7, 'август': 8, 'сентябр': 9,
+        'октябр': 10, 'ноябр': 11, 'декабр': 12,
+    }
+    if 'сегодня' in t:
+        return today
+    if 'завтра' in t:
+        return today + timedelta(days=1)
+    for name, num in MONTH_MAP.items():
+        idx = t.find(name)
+        if idx == -1:
+            continue
+        before = t[max(0, idx - 4):idx].strip()
+        words = before.split()
+        if words and words[-1].isdigit():
+            try:
+                day = int(words[-1])
+                yr = today.year if (num > today.month or (num == today.month and day >= today.day)) else today.year + 1
+                return date(yr, num, day)
+            except ValueError:
+                pass
+    return None
+
+
 def _quick_intent(text: str, today: date) -> dict | None:
-    """Catches unambiguous view commands. Everything else → AI."""
+    """Catches unambiguous commands before hitting AI."""
     t = text.lower().strip()
 
     MONTH_MAP = {
@@ -257,30 +285,35 @@ def _quick_intent(text: str, today: date) -> dict | None:
         'октябр': 10, 'ноябр': 11, 'декабр': 12,
     }
 
-    # Explicit save keywords → never intercept, let AI handle
+    # Explicit save keywords → always let AI handle
     SAVE = ['добав', 'запиш', 'внес', 'поставь', 'запланир', 'занеси',
             'сохрани', 'напомни', 'каждую', 'каждой', 'каждое', 'каждый',
             'хранилищ', 'практик', 'послани', 'цитат']
     if any(w in t for w in SAVE):
         return None
 
+    # Delete day: убери/удали + конкретная дата
+    DELETE = ['убери', 'удали', 'очисти', 'сотри', 'убрать', 'удалить', 'очистить']
+    if any(w in t for w in DELETE):
+        d = _parse_date_from_text(t, today)
+        if d:
+            return {"type": "delete_day", "date": d.strftime('%Y-%m-%d')}
+        # Если нет конкретной даты — пусть AI разберётся (удалить конкретное дело)
+        return None
+
     VIEW_VERBS = ['скинь', 'покажи', 'вышли', 'пришли', 'отправь',
                   'скинуть', 'показать', 'выслать', 'прислать']
     has_view = any(v in t for v in VIEW_VERBS)
-
     is_text = any(w in t for w in ['текстом', 'списком', 'без картинки'])
 
-    # сегодня / завтра — только с явным глаголом просмотра
     if has_view and any(w in t for w in ['сегодня', 'сегодняшн']):
         return {"type": "show_day", "date": today.strftime('%Y-%m-%d')}
     if has_view and any(w in t for w in ['завтра', 'завтрашн']):
         return {"type": "show_day", "date": (today + timedelta(days=1)).strftime('%Y-%m-%d')}
 
-    # неделя — с глаголом или без (план на неделю, неделя и т.п.)
     if any(w in t for w in ['неделю', 'недели', 'неделе', 'неделя']):
         return {"type": "show_week_text" if is_text else "show_week"}
 
-    # месяц — с глаголом или через "план на [месяц]"
     has_month_ctx = has_view or 'план на' in t or 'план ' in t or 'месяц' in t
     if has_month_ctx:
         if 'следующ' in t and 'месяц' in t:
@@ -291,11 +324,10 @@ def _quick_intent(text: str, today: date) -> dict | None:
             return {"type": "show_month", "date": f"{today.year}-{today.month:02d}-01"}
         for name, num in MONTH_MAP.items():
             if name in t:
-                # "25 июля" = дата для записи, не просмотр месяца
                 idx = t.find(name)
                 before = t[max(0, idx - 4):idx].strip()
                 if before and before[-1].isdigit():
-                    return None
+                    return None  # "25 июля" = дата для записи
                 yr = today.year if num >= today.month else today.year + 1
                 return {"type": "show_month", "date": f"{yr}-{num:02d}-01"}
 
