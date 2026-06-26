@@ -122,114 +122,60 @@ async def classify_message(text: str, history: list[dict] | None = None, inbox_c
 
     tomorrow = (today_date + timedelta(days=1)).strftime('%Y-%m-%d')
 
-    # Compute day names for examples
-    _dow = today_date.weekday()
-    _days_ru = ['понедельник','вторник','среду','четверг','пятницу','субботу','воскресенье']
-    _this_fri = (today_date + timedelta(days=(4 - _dow) % 7 or 7)).strftime('%Y-%m-%d')
-    _this_sun = (today_date + timedelta(days=(6 - _dow) % 7 or 7)).strftime('%Y-%m-%d')
-    _next_mon = (today_date + timedelta(days=(7 - _dow))).strftime('%Y-%m-%d')
+    system_prompt = f"""Ты умный органайзер-бот Карины. Понимай смысл сообщения, а не отдельные слова.
+Сегодня {today_str} ({weekday_ru}), UTC+7.
 
-    system_prompt = f"""Ты органайзер-бот Карины. Сегодня {today_str} ({weekday_ru}), UTC+7.
-
-ФОРМАТ ОТВЕТА (строго JSON):
+ФОРМАТ (строго JSON):
 {{"items":[{{"type":"...","text":"...","date":"...","time":"...","old_text":"...","day_of_week":null,"category":null}}],"response":"..."}}
-Несколько дел в одном сообщении → несколько объектов в items.
+Несколько дел → несколько объектов в items.
 
-━━━ ПРИОРИТЕТ ПРОВЕРКИ ТИПОВ ━━━
-Сначала проверяй update → delete → delete_day → plan → show_*
+ТИПЫ:
 
-▶ update — изменить/перенести СУЩЕСТВУЮЩЕЕ дело (оно уже записано ранее)
-❗ ТОЛЬКО если есть явное слово изменения: «измени», «поменяй», «скорректируй», «исправь», «поправь», «перенеси», «сдвинь», «отредактируй» — И понятно какое именно существующее дело меняется.
-❗ Если дело упоминается впервые (нет в контексте) — это plan, не update!
-old_text = 1-3 ключевых слова существующего дела для поиска
-date/time = новые значения
-Время «16-18:00» / «с 16 до 18» → time="16:00"
-Примеры:
-«измени встречу: теперь в 17» → update, old_text="встреча", time="17:00"
-«скорректируй йогу — в 9 утра» → update, old_text="йога", time="09:00"
-«перенеси звонок на пятницу» → update, old_text="звонок", date={_this_fri}
-«сдвинь встречу на 17:00» → update, old_text="встреча", time="17:00"
-«завтра событие измени по времени. будет 16-18:00» → update, old_text="событие", time="16:00"
-«поправь задачу: теперь в 16» → update, old_text="задача", time="16:00"
-«врача перенеси на четверг в 14» → update, old_text="врач", date=ближайший четверг, time="14:00"
+plan — записать НОВОЕ дело на конкретную дату/время.
+Когда: пользователь сообщает о новом событии/задаче с датой, просит записать/добавить/поставить что-то в план.
+date=YYYY-MM-DD, time=HH:MM (если есть), text=текст дела дословно.
+Несколько дел на одну дату → несколько объектов.
 
-▶ delete — удалить ОДНО конкретное дело
-old_text = 1-3 ключевых слова из названия
-❗ Только когда удаляют ОДНО дело — не весь день!
-Примеры:
-«удали встречу с врачом» → old_text="встреча врач"
-«убери йогу» → old_text="йога"
-«вычеркни звонок маме» → old_text="звонок мама"
-«удали задачу про финансы» → old_text="финансы"
+update — изменить уже существующее дело (время, дату, текст).
+Когда: пользователь хочет скорректировать/перенести/исправить что-то что уже записано.
+old_text=ключевые слова старого дела, date/time=новые значения.
+Время вида «16-18:00» → time="16:00".
 
-▶ delete_day — удалить ВСЕ планы на день (только когда «всё», «все», «весь»!)
-date = YYYY-MM-DD
-Примеры:
-«убери всё на 25 июля» → date=2026-07-25
-«удали все планы на завтра» → date={tomorrow}
-«очисти весь день в пятницу» → date={_this_fri}
+delete — удалить одно конкретное дело.
+Когда: пользователь хочет убрать/удалить/вычеркнуть одно дело.
+old_text=ключевые слова дела.
 
-▶ plan — записать НОВОЕ дело с датой/временем
-❗ Только новые дела! Если упоминается существующее + изменение → update
-date = YYYY-MM-DD, time = HH:MM, text = текст дела
-Примеры:
-«завтра в 10 йога» → date={tomorrow}, time="10:00", text="йога"
-«встреча в пятницу в 15:00» → date={_this_fri}, time="15:00", text="встреча"
-«5 июля врач» → date=2026-07-05, text="врач"
-«на 25 июля добавь: анализ крови, посетить тренера» → ДВА объекта plan
-«поставь на следующий понедельник: планёрка» → date={_next_mon}, text="планёрка"
-«в воскресенье в 11 кофе с подругой» → date={_this_sun}, time="11:00", text="кофе с подругой"
+delete_day — удалить ВСЕ дела на конкретный день.
+Когда: пользователь хочет очистить весь день, убрать всё.
+date=YYYY-MM-DD.
 
-▶ routine — ежедневная привычка (каждый день)
-Примеры: «каждый день медитация», «по утрам зарядка», «ежедневно читать»
+show_day — показать план конкретного дня.
+Когда: пользователь хочет увидеть/посмотреть что запланировано на день.
+date=YYYY-MM-DD.
 
-▶ weekly — привычка в конкретный день недели (day_of_week: 0=пн..6=вс)
-⚠️ Несколько дел → отдельный объект на каждое!
-Примеры:
-«каждое воскресенье: анализ финансов, план на неделю, инбокс» → ТРИ объекта weekly day_of_week=6
-«по понедельникам планёрка» → weekly day_of_week=0
+show_week — показать план недели картинкой.
+show_week_text — показать план недели текстом/списком.
+show_month — показать план месяца картинкой. date=YYYY-MM-01.
 
-▶ show_day — показать план дня (ТОЛЬКО просмотр!)
-date = YYYY-MM-DD
-Примеры:
-«план на сегодня» → date={today_str}
-«что у меня сегодня» → date={today_str}
-«мой день» → date={today_str}
-«покажи план на завтра» → date={tomorrow}
-«что стоит на пятницу» → date={_this_fri}
-«план на 5 июля» → date=2026-07-05
+routine — ежедневная привычка (каждый день без исключений).
+weekly — привычка в конкретный день недели. day_of_week: 0=пн,1=вт,2=ср,3=чт,4=пт,5=сб,6=вс. Несколько дел → несколько объектов.
 
-▶ show_week — показать неделю картинкой: «план на неделю», «скинь неделю», «вся неделя»
-▶ show_week_text — неделю текстом: «план на неделю текстом», «список на неделю»
-▶ show_month — показать месяц (date=YYYY-MM-01): «план на июль», «покажи август», «следующий месяц»
+inbox — задача без даты, нужно разобрать позже. category из списка ниже.
+someday — мечта/идея без срока.
+reminder — духовная фраза/послание в хранилище.
+practice — телесная практика в хранилище.
+lifehack — полезная информация/лайфхак в хранилище.
+add_category — добавить категорию инбокса.
+remove_category — удалить категорию инбокса.
+question — общий вопрос не про планы пользователя.
 
-▶ inbox — дело без даты, разобрать потом (+ category из списка ниже)
-▶ someday — идея/мечта без срока: «хочу когда-нибудь», «было бы здорово»
-▶ reminder — духовная фраза/послание: «в хранилище: текст», «добавь цитату»
-▶ practice — телесная практика: «добавь практику: описание»
-▶ lifehack — лайфхак/полезная информация: «добавь лайфхак», «сохрани в лайфхаки», «запиши лайфхак», «в лайфхаки:»
-▶ add_category — новая категория инбокса: «добавь категорию финансы»
-▶ remove_category — удалить категорию: «убери категорию здоровье»
-▶ question — ТОЛЬКО общий вопрос не про планы («что такое медитация»)
-   ❌ НЕЛЬЗЯ question если речь о расписании/планах — это всегда show_*!
+КАТЕГОРИИ ИНБОКСА: {', '.join(f'"{c}"' for c in (inbox_cats or DEFAULT_INBOX_CATEGORIES))}
 
-━━━ КЛЮЧЕВОЕ ПРАВИЛО ━━━
-Есть конкретное дело для записи + дата → plan (НЕ show_day!)
-Нет конкретного дела, только дата/период → show_day/show_week/show_month
+ДАТА: сегодня {today_str} ({weekday_ru}). Все остальные даты вычисляй от неё.
 
-━━━ КАТЕГОРИИ ИНБОКСА ━━━
-{', '.join(f'"{c}"' for c in (inbox_cats or DEFAULT_INBOX_CATEGORIES))}
+ТЕКСТ: сохраняй дословно, включая ссылки (https://...). Не переформулируй.
 
-━━━ ДАТЫ ━━━
-Сегодня = {today_str} ({weekday_ru}). Считай все даты от этой.
-«эта пятница» = {_this_fri}, «это воскресенье» = {_this_sun}, «следующий понедельник» = {_next_mon}
-
-━━━ ТЕКСТ ━━━
-Сохраняй ДОСЛОВНО включая все ссылки (https://...). Ссылки — часть текста, не удалять!
-Не переформулируй, не добавляй и не убирай слова.
-
-━━━ ОТВЕТ ━━━
-response = одно короткое подтверждение по-русски."""
+response = короткое подтверждение по-русски."""
 
     messages = [{"role": "system", "content": system_prompt}]
     if history:
@@ -292,92 +238,6 @@ async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None) 
     return await _search()
 
 
-def _parse_date_from_text(t: str, today: date) -> date | None:
-    """Extract a specific date from text like '25 июля', 'сегодня', 'завтра'."""
-    MONTH_MAP = {
-        'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4,
-        'май': 5, 'мае': 5, 'маю': 5,
-        'июн': 6, 'июл': 7, 'август': 8, 'сентябр': 9,
-        'октябр': 10, 'ноябр': 11, 'декабр': 12,
-    }
-    if 'сегодня' in t:
-        return today
-    if 'завтра' in t:
-        return today + timedelta(days=1)
-    for name, num in MONTH_MAP.items():
-        idx = t.find(name)
-        if idx == -1:
-            continue
-        before = t[max(0, idx - 4):idx].strip()
-        words = before.split()
-        if words and words[-1].isdigit():
-            try:
-                day = int(words[-1])
-                yr = today.year if (num > today.month or (num == today.month and day >= today.day)) else today.year + 1
-                return date(yr, num, day)
-            except ValueError:
-                pass
-    return None
-
-
-def _quick_intent(text: str, today: date) -> dict | None:
-    """Catches unambiguous commands before hitting AI."""
-    t = text.lower().strip()
-
-    MONTH_MAP = {
-        'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4,
-        'май': 5, 'мае': 5, 'маю': 5,
-        'июн': 6, 'июл': 7, 'август': 8, 'сентябр': 9,
-        'октябр': 10, 'ноябр': 11, 'декабр': 12,
-    }
-
-    # Explicit save keywords → always let AI handle
-    SAVE = ['добав', 'запиш', 'внес', 'поставь', 'запланир', 'занеси',
-            'сохрани', 'напомни', 'каждую', 'каждой', 'каждое', 'каждый',
-            'хранилищ', 'практик', 'послани', 'цитат']
-    if any(w in t for w in SAVE):
-        return None
-
-    # Delete day: убери/удали + "всё/все/весь" + дата → удалить весь день
-    # Без "всё/все" → это удаление конкретного дела, пусть AI разбирается
-    DELETE = ['убери', 'удали', 'очисти', 'сотри', 'убрать', 'удалить', 'очистить']
-    ALL_WORDS = ['всё', 'все', 'весь', 'вообще всё', 'все планы', 'все пункты']
-    if any(w in t for w in DELETE) and any(w in t for w in ALL_WORDS):
-        d = _parse_date_from_text(t, today)
-        if d:
-            return {"type": "delete_day", "date": d.strftime('%Y-%m-%d')}
-
-    VIEW_VERBS = ['скинь', 'покажи', 'вышли', 'пришли', 'отправь',
-                  'скинуть', 'показать', 'выслать', 'прислать']
-    has_view = any(v in t for v in VIEW_VERBS)
-    is_text = any(w in t for w in ['текстом', 'списком', 'без картинки'])
-
-    if has_view and any(w in t for w in ['сегодня', 'сегодняшн']):
-        return {"type": "show_day", "date": today.strftime('%Y-%m-%d')}
-    if has_view and any(w in t for w in ['завтра', 'завтрашн']):
-        return {"type": "show_day", "date": (today + timedelta(days=1)).strftime('%Y-%m-%d')}
-
-    if any(w in t for w in ['неделю', 'недели', 'неделе', 'неделя']):
-        return {"type": "show_week_text" if is_text else "show_week"}
-
-    has_month_ctx = has_view or 'план на' in t or 'план ' in t or 'месяц' in t
-    if has_month_ctx:
-        if 'следующ' in t and 'месяц' in t:
-            nm = today.month % 12 + 1
-            yr = today.year + (1 if nm == 1 else 0)
-            return {"type": "show_month", "date": f"{yr}-{nm:02d}-01"}
-        if ('этот месяц' in t or 'текущ' in t) and 'месяц' in t:
-            return {"type": "show_month", "date": f"{today.year}-{today.month:02d}-01"}
-        for name, num in MONTH_MAP.items():
-            if name in t:
-                idx = t.find(name)
-                before = t[max(0, idx - 4):idx].strip()
-                if before and before[-1].isdigit():
-                    return None  # "25 июля" = дата для записи
-                yr = today.year if num >= today.month else today.year + 1
-                return {"type": "show_month", "date": f"{yr}-{num:02d}-01"}
-
-    return None
 
 
 async def ai_chat(text: str, history: list[dict] | None = None) -> str:
@@ -407,19 +267,13 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
     history = _chat_history.get(chat_id, [])
 
-    # Fast keyword check — catches obvious show queries before AI can misclassify them
-    today_vn = datetime.now(VN_TZ).date()
-    quick = _quick_intent(text, today_vn)
-    if quick:
-        result = {"items": [quick], "response": ""}
-    else:
-        inbox_cats = await get_inbox_categories(chat_id)
-        try:
-            result = await classify_message(text, history, inbox_cats)
-        except Exception as e:
-            logging.error(f"AI classify error: {e}")
-            await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
-            return
+    inbox_cats = await get_inbox_categories(chat_id)
+    try:
+        result = await classify_message(text, history, inbox_cats)
+    except Exception as e:
+        logging.error(f"AI classify error: {e}")
+        await message.answer("❌ Не смогла обработать. Попробуй ещё раз.")
+        return
 
     items = result.get("items", [])
     response_text = result.get("response", "Сохранила ✅")
