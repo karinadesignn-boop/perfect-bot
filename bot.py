@@ -833,9 +833,10 @@ async def inbox_cmd(message: Message):
     for cat in cats:
         kb.button(text=cat, callback_data=f"incat:{cat[:40]}")
     kb.button(text="📋 все", callback_data="incat:__all__")
-    kb.adjust(2)
+    kb.adjust(3)
+    cat_list = "\n".join(f"🧿 {c}" for c in cats)
     await message.answer(
-        "📥 *Инбокс* — выбери категорию:",
+        f"📥 *Инбокс*\n\n{cat_list}\n\n▼ выбери категорию:",
         reply_markup=kb.as_markup(),
         parse_mode="Markdown"
     )
