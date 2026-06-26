@@ -51,30 +51,6 @@ VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 _chat_history: dict[int, list[dict]] = {}
 MAX_HISTORY_TURNS = 8
 
-REFLECTION_QUESTIONS = [
-    "✨ Остановись на мгновение. Что сейчас происходит внутри твоего тела — какое послание оно несёт?",
-    "🌙 Какая мысль сегодня возвращается к тебе снова и снова, словно пытается достучаться?",
-    "🔮 Оцени свою энергию от 1 до 10. Что сегодня питает тебя, а что забирает силу?",
-    "🌿 Есть ли что-то, что тяготит твою душу прямо сейчас? Назови это — уже легче.",
-    "⭐ Какой маленький момент сегодня был твоим даром — пусть совсем крошечным?",
-    "💜 Как ты сейчас обращаешься с собой — как с другом или как с судьёй?",
-    "🌸 Твоё тело мудрее ума. Что оно хочет тебе сказать прямо сейчас?",
-    "🕊️ Какое чувство сейчас громче всех? Позволь ему просто быть.",
-    "🌌 Что ты откладываешь? Какая часть тебя боится сделать этот шаг?",
-    "🌊 Если бы твоё состояние было стихией — огнём, водой, ветром или землёй — что это было бы?",
-    "🪬 Что сегодня требует твоего принятия, а не борьбы?",
-    "✨ Представь себя через год. Что она хочет тебе сказать прямо сейчас?",
-]
-
-POLYVAGAL_PRACTICES = [
-    "🌬 *Дыхание освобождения*\nДва вдоха через нос подряд — короткий и ещё один, потом медленный длинный выдох через рот. Повтори 3 раза. Нервная система получает сигнал — ты в безопасности.",
-    "🤲 *Прикосновение к сердцу*\nПоложи обе руки на грудь. Почувствуй тепло. Три медленных вдоха и скажи себе: «Я здесь. Я в безопасности. Этот момент — мой.»",
-    "🔯 *Дыхание по квадрату*\nВдох 4 сек → задержка 4 → выдох 4 → задержка 4. Повтори 4 раза. Это древняя практика возврата в центр.",
-    "🌍 *Якорение в настоящем*\n5 вещей которые видишь → 4 которые можешь потрогать → 3 звука → 2 запаха → 1 вкус. Ты здесь. Ты реальна.",
-    "🦋 *Объятие себя*\nСкрести руки на груди. Обними себя. Поочерёдно мягко постукивай по плечам — левое, правое, медленно. Это твоя забота о себе.",
-    "👁 *Мягкий взгляд*\nСмотри перед собой и медленно расширяй взгляд по бокам, не двигая глазами. Удержи 30-60 секунд. Периферийное зрение — сигнал безопасности для древней части мозга.",
-    "🌊 *Волна выдоха*\nВдох 4 сек, выдох 8 сек. Длинный выдох — как волна, уносящая напряжение. Повтори 5 раз. Парасимпатика просыпается.",
-]
 
 
 # ---------- БАЗА ДАННЫХ ----------
@@ -181,7 +157,6 @@ routine — ежедневная привычка.
 someday — идея/мечта без даты.
 Примеры: «хочу когда-нибудь», «было бы здорово».
 
-reflection — личные мысли, чувства, дневниковая запись.
 
 question — ТОЛЬКО общие вопросы к тебе НЕ про планы. («что такое медитация», «как похудеть»).
 ❌ НЕЛЬЗЯ использовать question если речь идёт о планах/расписании пользователя — это всегда show_day/show_week/show_month!
@@ -499,7 +474,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             _add_to_history(chat_id, text, caption)
             return
 
-    icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "reflection": "💭", "inbox": "📥", "update": "✏️"}
+    icons = {"plan": "📅", "routine": "🔄", "someday": "🌙", "inbox": "📥", "update": "✏️"}
     sb = get_sb()
     saved = []
 
@@ -609,7 +584,6 @@ async def start(message: Message):
         "🗓 /month — план на месяц картинкой\n"
         "🔄 /routines — ежедневные рутины\n"
         "🌙 /someday — список «когда-нибудь»\n"
-        "💭 /reflections — дневник рефлексий\n"
         "📥 /inbox — необработанные записи\n"
         "/help — как пользоваться"
     )
@@ -622,11 +596,9 @@ async def help_cmd(message: Message):
         "📅 *Планы:* «встреча в пятницу в 15:00», «сдать отчёт 30-го»\n"
         "🔄 *Рутины:* «каждый день медитация», «пить воду утром»\n"
         "🌙 *Когда-нибудь:* «хочу поехать в Японию»\n"
-        "💭 *Рефлексия:* «сегодня поняла что...», «чувствую тревогу»\n"
         "💬 *Вопрос:* любой вопрос — просто отвечу\n\n"
         "Голосовые тоже принимаю 🎤\n\n"
-        "Каждый вечер в 22:00 — план на завтра.\n"
-        "Каждые 3 часа — вопрос для рефлексии или практика.",
+        "Каждый вечер в 22:00 — план на завтра.",
         parse_mode="Markdown"
     )
 
@@ -701,28 +673,6 @@ async def inbox_cmd(message: Message):
         await message.answer(f"📥 {r['text']}", reply_markup=simple_keyboard(r['id']))
 
 
-@dp.message(Command("reflections"))
-async def reflections_cmd(message: Message):
-    sb = get_sb()
-    rows = await _db(lambda: sb.table('items')
-        .select('*')
-        .eq('chat_id', message.chat.id)
-        .eq('type', 'reflection')
-        .eq('status', 'active')
-        .order('created_at', desc=True)
-        .limit(10)
-        .execute())
-
-    if not rows.data:
-        await message.answer("Дневник пуст.\n\nПоделись наблюдением о себе — напиши или запиши голосовое 🎤")
-        return
-
-    await message.answer("*Последние записи:*", parse_mode="Markdown")
-    for r in rows.data:
-        dt = datetime.fromisoformat(r['created_at'])
-        dt_vn = pytz.utc.localize(dt).astimezone(VN_TZ) if dt.tzinfo is None else dt.astimezone(VN_TZ)
-        label = dt_vn.strftime('%d.%m %H:%M')
-        await message.answer(f"💭 _{label}_\n{r['text']}", parse_mode="Markdown")
 
 
 # ---------- КАРТИНКИ-ПЛАННЕРЫ ----------
@@ -1217,34 +1167,13 @@ async def send_evening_plan(chat_id: int):
     await bot.send_message(chat_id, text, parse_mode="Markdown")
 
 
-# ---------- ПРОМПТ РЕФЛЕКСИИ ----------
-
-async def send_reflection_prompt(chat_id: int):
-    if random.random() < 0.5:
-        question = random.choice(REFLECTION_QUESTIONS)
-        await bot.send_message(
-            chat_id,
-            f"💭 *Минута для себя:*\n\n{question}\n\n_Можешь ответить текстом или голосовым._",
-            parse_mode="Markdown"
-        )
-    else:
-        practice = random.choice(POLYVAGAL_PRACTICES)
-        await bot.send_message(
-            chat_id,
-            f"🌿 *Практика для нервной системы:*\n\n{practice}",
-            parse_mode="Markdown"
-        )
 
 
 # ---------- ПЛАНИРОВЩИК ----------
 
 async def scheduler_loop():
     sent_evening: set[str] = set()
-    sent_reflection: set[str] = set()
     sent_plans: set[str] = set()
-
-    # VN hours (UTC+7): 9, 12, 15, 18
-    REFLECTION_HOURS_VN = {9, 12, 15, 18}
 
     while True:
         try:
@@ -1263,17 +1192,6 @@ async def scheduler_loop():
                         await send_evening_plan(chat_id)
                     except Exception as e:
                         logging.error(f"Evening plan error {chat_id}: {e}")
-
-            # Reflection every 3 hours at 9, 12, 15, 18 VN
-            reflection_key = f"reflection:{vn_date}:{vn_hour}"
-            if vn_hour in REFLECTION_HOURS_VN and reflection_key not in sent_reflection:
-                sent_reflection.add(reflection_key)
-                logging.info(f"Sending reflection, VN time: {vn_hhmm}")
-                for chat_id in await get_all_users():
-                    try:
-                        await send_reflection_prompt(chat_id)
-                    except Exception as e:
-                        logging.error(f"Reflection error {chat_id}: {e}")
 
             # Per-plan reminders at their scheduled time
             plan_key = f"plan:{vn_date}:{vn_hhmm}"
@@ -1302,8 +1220,6 @@ async def scheduler_loop():
 
             if len(sent_evening) > 500:
                 sent_evening.clear()
-            if len(sent_reflection) > 500:
-                sent_reflection.clear()
             if len(sent_plans) > 2000:
                 sent_plans.clear()
 
@@ -1329,7 +1245,6 @@ async def main():
         {"command": "plan_list",   "description": "📋 Список планов (удалить/отметить)"},
         {"command": "routines",    "description": "🔄 Ежедневные рутины"},
         {"command": "someday",     "description": "🌙 Список «когда-нибудь»"},
-        {"command": "reflections", "description": "💭 Дневник рефлексий"},
         {"command": "inbox",       "description": "📥 Необработанные записи"},
         {"command": "help",        "description": "❓ Как пользоваться"},
     ])
