@@ -289,9 +289,9 @@ def _quick_intent(text: str, today: date) -> dict | None:
             'расписан', 'что у меня', 'что на', 'что в', 'мой день',
             'день', 'календар', 'посмотр']
 
-    has_show = any(w in t for w in SHOW)
     is_text = any(w in t for w in ['текстом', 'списком', 'напиши', 'без картинки', 'без фото', 'список'])
-    is_save = any(w in t for w in ['добав', 'запиш', 'каждую', 'каждой', 'каждое', 'каждый', 'повтор', 'еженедел', 'хранилищ', 'практик', 'послани', 'цитат', 'фраз'])
+    is_save = any(w in t for w in ['добав', 'запиш', 'внес', 'внеси', 'внести', 'поставь', 'запланир', 'каждую', 'каждой', 'каждое', 'каждый', 'повтор', 'еженедел', 'хранилищ', 'практик', 'послани', 'цитат', 'фраз'])
+    has_show = not is_save and any(w in t for w in SHOW)
 
     if any(w in t for w in WEEK) and not is_save:
         return {"type": "show_week_text" if is_text else "show_week"}
@@ -320,10 +320,15 @@ def _quick_intent(text: str, today: date) -> dict | None:
     if ('этот месяц' in t or 'текущ' in t) and 'месяц' in t:
         return {"type": "show_month", "date": f"{today.year}-{today.month:02d}-01"}
 
-    # Specific month name (only when show intent is clear)
-    if has_show or 'месяц' in t:
+    # Specific month name (only when show intent is clear, and NOT a date like "25 июля")
+    if (has_show or 'месяц' in t) and not is_save:
         for name, num in MONTH_MAP.items():
             if name in t:
+                idx = t.find(name)
+                before = t[max(0, idx - 4):idx].strip()
+                if before and before[-1].isdigit():
+                    # "25 июля" — это дата, не просмотр месяца
+                    continue
                 yr = today.year if num >= today.month else today.year + 1
                 return {"type": "show_month", "date": f"{yr}-{num:02d}-01"}
 
