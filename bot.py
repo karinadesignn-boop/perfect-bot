@@ -520,32 +520,48 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
         elif msg_type == "clear_category":
             raw = (item.get("text") or item.get("old_text") or "")
-            # If _quick_intent set placeholder, or AI gave full sentence — extract category
             if raw == "__parse__" or len(raw) > 30:
-                raw = text  # fall back to full user message
-            # Match against user's actual categories
+                raw = text
+            # Find best matching category from user's actual categories
             cat_name = None
             raw_low = raw.lower()
             for c in inbox_cats:
-                if c.lower() in raw_low:
+                if c.lower() in raw_low or raw_low in c.lower():
                     cat_name = c
                     break
             if not cat_name:
-                cat_name = raw.strip() or "инбокс"
+                # Use first word that's long enough as fallback keyword
+                words = [w for w in raw_low.split() if len(w) > 3]
+                cat_name = words[0] if words else raw.strip()
+
+            # Search with wildcard so "книги" matches "Книги", "книги / чтение", etc.
             rows_clr = await _db(lambda c=cat_name: sb.table('items')
-                .select('id')
+                .select('id, time')
                 .eq('chat_id', chat_id)
                 .eq('type', 'inbox')
                 .eq('status', 'active')
-                .ilike('time', c)
+                .ilike('time', f'%{c}%')
                 .execute())
-            if rows_clr.data:
+
+            # Fallback: if nothing found with category, check items with null/empty time
+            if not rows_clr.data:
+                rows_all = await _db(lambda: sb.table('items')
+                    .select('id, time, text')
+                    .eq('chat_id', chat_id)
+                    .eq('type', 'inbox')
+                    .eq('status', 'active')
+                    .execute())
+                unique_times = list({r.get('time') for r in rows_all.data if rows_all.data})
+                saved.append(
+                    f"❓ Не нашла элементы категории «{cat_name}». "
+                    f"Категории в базе: {unique_times}. "
+                    f"Скажи точно: «очисти категорию [название]»"
+                )
+            else:
                 for r in rows_clr.data:
                     rid = r['id']
                     await _db(lambda f=rid: sb.table('items').delete().eq('id', f).execute())
                 saved.append(f"🗑 Удалила {len(rows_clr.data)} эл. из «{cat_name}»")
-            else:
-                saved.append(f"✨ В «{cat_name}» ничего не нашла (категория: {cat_name!r})")
 
         elif msg_type == "remove_category":
             old_text = item.get("old_text", save_text)
