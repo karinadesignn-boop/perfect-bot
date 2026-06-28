@@ -129,7 +129,7 @@ JSON: {{"items":[{{"type":"...","text":"...","date":"...","time":"...","old_text
 ТИПЫ (выбирай по смыслу, не по словам):
 plan — новое дело на дату. date=YYYY-MM-DD, time=HH:MM. text дословно с ссылками. Несколько дел → несколько объектов.
 update — изменить существующее. old_text=ключевые слова, новые date/time. «16-18:00»→time="16:00".
-delete — удалить одно дело. old_text=ключевые слова.
+delete — удалить одно дело из любого списка (план, someday, inbox, рутина и т.д.). old_text=ключевые слова того что удалить.
 delete_day — очистить весь день. date=YYYY-MM-DD. Только если просят убрать ВСЁ за день.
 show_day — показать план дня. date=YYYY-MM-DD.
 show_week — план недели картинкой.
@@ -220,8 +220,10 @@ async def ai_chat(text: str, history: list[dict] | None = None) -> str:
     messages = [{"role": "system", "content": (
         "Ты личный ассистент Карины. Отвечай по-русски, тепло и кратко. "
         "Отвечай на вопросы, поддерживай в разговоре. "
-        "НЕЛЬЗЯ: предлагать составить план, придумывать задачи или рутины, "
-        "писать списки дел от себя — это только по явной просьбе пользователя."
+        "НЕЛЬЗЯ: упоминать несуществующие функции или команды бота, выдумывать термины. "
+        "НЕЛЬЗЯ: предлагать составить план, придумывать задачи или рутины. "
+        "Если пользователь просит что-то сделать с данными (удалить, добавить, показать) — "
+        "скажи коротко что не смогла обработать этот запрос и попроси написать иначе."
     )}]
     if history:
         messages.extend(history[-8:])
@@ -278,6 +280,9 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
         if any(tr in t for tr in clear_triggers):
             return {"items": [{"type": "clear_category", "text": "__parse__"}],
                     "response": ""}
+
+        # delete — any phrase with delete verb → let AI determine what exactly to delete
+        # (don't intercept here, AI handles it — this block intentionally empty)
 
         # show_day
         show_words = ('покажи', 'что у меня', 'что запланировано', 'мой план', 'расписани', 'план на день')
