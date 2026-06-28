@@ -959,17 +959,19 @@ async def inbox_category_cb(callback: CallbackQuery):
                 .order('created_at', desc=True)
                 .limit(100)
                 .execute())
+        def _he(s: str) -> str:
+            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
         if not rows.data:
-            await callback.message.answer(f"В «{label}» пока пусто ✨")
+            await callback.message.answer(f"В «{_he(label)}» пока пусто ✨", parse_mode="HTML")
         else:
-            lines = [f"📥 *{label}* ({len(rows.data)})", ""]
+            lines = [f"📥 <b>{_he(label)}</b> ({len(rows.data)})", ""]
             for r in rows.data:
-                cat_tag = f"  _[{r['time']}]_" if cat == '__all__' and r.get('time') else ""
-                lines.append(f"❤️‍🔥  {r['text']}{cat_tag}")
-            # Split into chunks of max 4000 chars to avoid Telegram limit
+                cat_tag = f"  <i>[{_he(r['time'])}]</i>" if cat is None and r.get('time') else ""
+                lines.append(f"❤️‍🔥  {_he(r['text'])}{cat_tag}")
             text_out = "\n".join(lines)
             for i in range(0, len(text_out), 4000):
-                await callback.message.answer(text_out[i:i+4000], parse_mode="Markdown")
+                await callback.message.answer(text_out[i:i+4000], parse_mode="HTML")
     except Exception as e:
         logging.error(f"inbox_category_cb error: {e}", exc_info=True)
         await callback.message.answer(f"❌ Ошибка: {e}")
