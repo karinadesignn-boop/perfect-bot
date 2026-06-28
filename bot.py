@@ -804,86 +804,100 @@ async def routines_cmd(message: Message):
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
+def _h(s: str) -> str:
+    """Escape HTML special chars."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def _send_list(message: Message, header: str, items: list[str], empty_msg: str):
+    """Send a list with HTML formatting, splitting if over 4000 chars."""
+    if not items:
+        await message.answer(empty_msg)
+        return
+    lines = [f"<b>{_h(header)}</b>", ""] + [_h(t) for t in items]
+    text_out = "\n".join(lines)
+    for i in range(0, len(text_out), 4000):
+        await message.answer(text_out[i:i+4000], parse_mode="HTML")
+
+
 @dp.message(Command("someday"))
 async def someday_cmd(message: Message):
-    sb = get_sb()
-    rows = await _db(lambda: sb.table('items')
-        .select('*')
-        .eq('chat_id', message.chat.id)
-        .eq('type', 'someday')
-        .eq('status', 'active')
-        .order('id', desc=True)
-        .limit(20)
-        .execute())
-
-    if not rows.data:
-        await message.answer("Список «когда-нибудь» пуст 🌙\n\nНапиши например: «хочу поехать на Бали»")
-        return
-
-    lines = ["🔮 *когда-нибудь*", ""]
-    for r in rows.data:
-        lines.append(f"🌙  {r['text']}")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    try:
+        sb = get_sb()
+        rows = await _db(lambda: sb.table('items')
+            .select('text')
+            .eq('chat_id', message.chat.id)
+            .eq('type', 'someday')
+            .eq('status', 'active')
+            .order('id', desc=True)
+            .limit(50)
+            .execute())
+        await _send_list(message, "🌙 когда-нибудь",
+                         [f"🌙  {r['text']}" for r in rows.data],
+                         "Список «когда-нибудь» пуст 🌙\n\nНапиши например: «хочу поехать на Бали»")
+    except Exception as e:
+        logging.error(f"someday_cmd error: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("reminders"))
 async def reminders_cmd(message: Message):
-    sb = get_sb()
-    rows = await _db(lambda: sb.table('items')
-        .select('text')
-        .eq('chat_id', message.chat.id)
-        .eq('type', 'reminder')
-        .eq('status', 'active')
-        .order('created_at', desc=True)
-        .limit(50)
-        .execute())
-    if not rows.data:
-        await message.answer("Хранилище посланий пустое 🔮\n\nДобавь: «в хранилище: твоя фраза»")
-        return
-    lines = ["🔮 *мои послания*", ""]
-    for r in rows.data:
-        lines.append(f"✨  {r['text']}")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    try:
+        sb = get_sb()
+        rows = await _db(lambda: sb.table('items')
+            .select('text')
+            .eq('chat_id', message.chat.id)
+            .eq('type', 'reminder')
+            .eq('status', 'active')
+            .order('created_at', desc=True)
+            .limit(50)
+            .execute())
+        await _send_list(message, "🔮 мои послания",
+                         [f"✨  {r['text']}" for r in rows.data],
+                         "Хранилище посланий пустое 🔮\n\nДобавь: «в хранилище: твоя фраза»")
+    except Exception as e:
+        logging.error(f"reminders_cmd error: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("practices"))
 async def practices_cmd(message: Message):
-    sb = get_sb()
-    rows = await _db(lambda: sb.table('items')
-        .select('text')
-        .eq('chat_id', message.chat.id)
-        .eq('type', 'practice')
-        .eq('status', 'active')
-        .order('created_at', desc=True)
-        .limit(50)
-        .execute())
-    if not rows.data:
-        await message.answer("Хранилище практик пустое 🌿\n\nДобавь: «добавь практику: описание»")
-        return
-    lines = ["🌿 *телесные практики*", ""]
-    for r in rows.data:
-        lines.append(f"🧿  {r['text']}")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    try:
+        sb = get_sb()
+        rows = await _db(lambda: sb.table('items')
+            .select('text')
+            .eq('chat_id', message.chat.id)
+            .eq('type', 'practice')
+            .eq('status', 'active')
+            .order('created_at', desc=True)
+            .limit(50)
+            .execute())
+        await _send_list(message, "🌿 телесные практики",
+                         [f"🧿  {r['text']}" for r in rows.data],
+                         "Хранилище практик пустое 🌿\n\nДобавь: «добавь практику: описание»")
+    except Exception as e:
+        logging.error(f"practices_cmd error: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("lifehacks"))
 async def lifehacks_cmd(message: Message):
-    sb = get_sb()
-    rows = await _db(lambda: sb.table('items')
-        .select('text')
-        .eq('chat_id', message.chat.id)
-        .eq('type', 'lifehack')
-        .eq('status', 'active')
-        .order('created_at', desc=True)
-        .limit(100)
-        .execute())
-    if not rows.data:
-        await message.answer("Лайфхаков пока нет 💡\n\nДобавь: «лайфхак: текст» или «добавь лайфхак: ...»")
-        return
-    lines = ["💡 *лайфхаки*", ""]
-    for i, r in enumerate(rows.data, 1):
-        lines.append(f"{i}. {r['text']}")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    try:
+        sb = get_sb()
+        rows = await _db(lambda: sb.table('items')
+            .select('text')
+            .eq('chat_id', message.chat.id)
+            .eq('type', 'lifehack')
+            .eq('status', 'active')
+            .order('created_at', desc=True)
+            .limit(100)
+            .execute())
+        await _send_list(message, "💡 лайфхаки",
+                         [f"{i}. {r['text']}" for i, r in enumerate(rows.data, 1)],
+                         "Лайфхаков пока нет 💡\n\nДобавь: «лайфхак: текст»")
+    except Exception as e:
+        logging.error(f"lifehacks_cmd error: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 DEFAULT_INBOX_CATEGORIES = ['рефлексия/психология', 'мой ум/обучение', 'здоровье', 'отношения']
