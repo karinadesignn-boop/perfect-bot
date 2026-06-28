@@ -926,39 +926,46 @@ async def inbox_cmd(message: Message):
 
 @dp.callback_query(F.data.startswith("incat:"))
 async def inbox_category_cb(callback: CallbackQuery):
+    await callback.answer()  # dismiss spinner immediately
     cat = callback.data[len("incat:"):]
     chat_id = callback.from_user.id
-    sb = get_sb()
-    if cat == '__all__':
-        rows = await _db(lambda: sb.table('items')
-            .select('text, time')
-            .eq('chat_id', chat_id)
-            .eq('type', 'inbox')
-            .eq('status', 'active')
-            .order('created_at', desc=True)
-            .limit(30)
-            .execute())
-        label = "все"
-    else:
-        rows = await _db(lambda c=cat: sb.table('items')
-            .select('text, time')
-            .eq('chat_id', chat_id)
-            .eq('type', 'inbox')
-            .eq('status', 'active')
-            .ilike('time', c)
-            .order('created_at', desc=True)
-            .limit(30)
-            .execute())
-        label = cat
-    if not rows.data:
-        await callback.message.answer(f"В «{label}» пока пусто ✨")
-    else:
-        lines = [f"📥 *{label}*", ""]
-        for r in rows.data:
-            cat_tag = f"  _[{r['time']}]_" if cat == '__all__' and r.get('time') else ""
-            lines.append(f"❤️‍🔥  {r['text']}{cat_tag}")
-        await callback.message.answer("\n".join(lines), parse_mode="Markdown")
-    await callback.answer()
+    try:
+        sb = get_sb()
+        if cat == '__all__':
+            rows = await _db(lambda: sb.table('items')
+                .select('text, time')
+                .eq('chat_id', chat_id)
+                .eq('type', 'inbox')
+                .eq('status', 'active')
+                .order('created_at', desc=True)
+                .limit(100)
+                .execute())
+            label = "все"
+        else:
+            rows = await _db(lambda c=cat: sb.table('items')
+                .select('text, time')
+                .eq('chat_id', chat_id)
+                .eq('type', 'inbox')
+                .eq('status', 'active')
+                .ilike('time', c)
+                .order('created_at', desc=True)
+                .limit(100)
+                .execute())
+            label = cat
+        if not rows.data:
+            await callback.message.answer(f"В «{label}» пока пусто ✨")
+        else:
+            lines = [f"📥 *{label}* ({len(rows.data)})", ""]
+            for r in rows.data:
+                cat_tag = f"  _[{r['time']}]_" if cat == '__all__' and r.get('time') else ""
+                lines.append(f"❤️‍🔥  {r['text']}{cat_tag}")
+            # Split into chunks of max 4000 chars to avoid Telegram limit
+            text_out = "\n".join(lines)
+            for i in range(0, len(text_out), 4000):
+                await callback.message.answer(text_out[i:i+4000], parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"inbox_category_cb error: {e}", exc_info=True)
+        await callback.message.answer(f"❌ Ошибка: {e}")
 
 
 
