@@ -142,6 +142,7 @@ someday — идея/мечта без срока.
 reminder — духовная фраза в хранилище.
 practice — телесная практика в хранилище.
 lifehack — лайфхак в хранилище.
+move_to_plan — перенести задачу/пункт из инбокса в план дня. old_text=ключевые слова задачи из инбокса, date=YYYY-MM-DD, time=HH:MM (если есть). Элемент удаляется из инбокса автоматически. Когда: «перенеси X в план на [дату]», «поставь X из инбокса на [дату]», «запланируй X на [дату]» (если X явно из инбокса).
 add_category — добавить новую категорию инбокса. text=название.
 remove_category — удалить САМУ КАТЕГОРИЮ (ярлык). Только если явно говорят «удали категорию X».
 clear_category — удалить ВСЕ ЭЛЕМЕНТЫ внутри категории (книги, задачи и т.д.). text=название категории. Когда: «удали все книги», «очисти категорию книги», «убери всё из X».
@@ -477,6 +478,33 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 'status': 'active', 'created_at': datetime.now().isoformat()
             }).execute())
             saved.append(f"✅ Категория добавлена: «{cat_name}»")
+
+        elif msg_type == "move_to_plan":
+            old_text = item.get("old_text", save_text)
+            found = await _find_item(chat_id, old_text)
+            if not found:
+                # search specifically in inbox
+                terms = [w for w in old_text.lower().split() if len(w) > 2]
+                for term in terms[:3]:
+                    row = await _db(lambda t=term: sb.table('items').select('id, text')
+                        .eq('chat_id', chat_id).eq('type', 'inbox').eq('status', 'active')
+                        .ilike('text', f'%{t}%').limit(1).execute())
+                    if row.data:
+                        found = row.data[0]
+                        break
+            if found:
+                move_text = found['text']
+                move_date = item_date or (datetime.now(VN_TZ).date().strftime('%Y-%m-%d'))
+                await _db(lambda st=move_text, d=move_date, t=item_time: sb.table('items').insert({
+                    'chat_id': chat_id, 'text': st, 'type': 'plan',
+                    'date': d, 'time': t, 'status': 'active',
+                    'created_at': datetime.now().isoformat()
+                }).execute())
+                fid = found['id']
+                await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                saved.append(f"📅 Перенесла в план на {move_date}: «{move_text}»")
+            else:
+                saved.append(f"❓ Не нашла в инбоксе: «{old_text}»")
 
         elif msg_type == "clear_category":
             cat_name = item.get("text") or item.get("old_text") or save_text
