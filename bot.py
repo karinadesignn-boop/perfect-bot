@@ -126,31 +126,39 @@ async def classify_message(text: str, history: list[dict] | None = None, inbox_c
 
 JSON: {{"items":[{{"type":"...","text":"...","date":"...","time":"...","old_text":"...","day_of_week":null,"category":null}}],"response":"..."}}
 
-ТИПЫ (выбирай по смыслу, не по словам):
-plan — новое дело на дату. date=YYYY-MM-DD, time=HH:MM. text дословно с ссылками. Несколько дел → несколько объектов.
-update — изменить существующее. old_text=ключевые слова, новые date/time. «16-18:00»→time="16:00".
-delete — удалить одно дело из любого списка (план, someday, inbox, рутина и т.д.). old_text=ключевые слова того что удалить.
-delete_day — очистить весь день. date=YYYY-MM-DD. Только если просят убрать ВСЁ за день.
+ТИПЫ:
+plan — новое дело на дату. date=YYYY-MM-DD, time=HH:MM. text дословно.
+update — изменить существующее. old_text=ключевые слова, новые date/time.
+delete — удалить одно дело. old_text=ключевые слова.
+delete_day — очистить весь день. date=YYYY-MM-DD.
 show_day — показать план дня. date=YYYY-MM-DD.
 show_week — план недели картинкой.
 show_week_text — план недели текстом.
-show_month — план месяца картинкой. date=YYYY-MM-01.
-routine — ежедневная привычка.
-weekly — привычка по дням недели. day_of_week: 0=пн..6=вс.
-inbox — задача/книга/ссылка без даты. category из: {', '.join(f'"{c}"' for c in (inbox_cats or DEFAULT_INBOX_CATEGORIES))}. Список → несколько объектов с одной category.
-someday — идея/мечта без срока.
-reminder — духовная фраза в хранилище.
-practice — телесная практика в хранилище.
-lifehack — лайфхак в хранилище.
-move_to_plan — перенести задачу/пункт из инбокса в план дня. old_text=ключевые слова задачи из инбокса, date=YYYY-MM-DD, time=HH:MM (если есть). Элемент удаляется из инбокса автоматически. Когда: «перенеси X в план на [дату]», «поставь X из инбокса на [дату]», «запланируй X на [дату]» (если X явно из инбокса).
-add_category — добавить новую категорию инбокса. text=название.
-remove_category — удалить САМУ КАТЕГОРИЮ (ярлык). Только если явно говорят «удали категорию X».
-clear_category — удалить ВСЕ ЭЛЕМЕНТЫ внутри категории (книги, задачи и т.д.). text=название категории. Когда: «удали все книги», «очисти категорию книги», «убери всё из X».
-question — вопрос не про планы.
+show_month — план месяца. date=YYYY-MM-01.
+routine — ежедневная привычка. text=текст.
+weekly — привычка по дням. day_of_week: 0=пн..6=вс.
+inbox — задача без даты. category из: {', '.join(f'"{c}"' for c in (inbox_cats or DEFAULT_INBOX_CATEGORIES))}.
+someday — идея/мечта без срока. text=текст.
+reminder — духовная фраза. practice — практика. lifehack — лайфхак.
+move_to_plan — из инбокса в план. old_text=ключевые слова, date=дата.
+add_category — новая категория инбокса. remove_category — удалить категорию (ярлык).
+clear_category — удалить ВСЕ элементы внутри категории. text=название категории.
+question — только если это вопрос без действия.
 
-ВАЖНО: «удали книги/задачи/элементы из категории» → clear_category, НЕ remove_category.
-ВАЖНО: если пользователь просит записать/добавить/внести/запланировать → plan (не show_month/show_day).
-ТЕКСТ: дословно, ссылки не удалять.
+ПРИМЕРЫ:
+"удали поехать на Бали" → {{"type":"delete","old_text":"поехать на Бали"}}
+"убери встречу с врачом из someday" → {{"type":"delete","old_text":"встреча врач"}}
+"вычеркни йогу из рутин" → {{"type":"delete","old_text":"йога"}}
+"удали все книги из инбокса" → {{"type":"clear_category","text":"книги"}}
+"очисти категорию книги" → {{"type":"clear_category","text":"книги"}}
+"хочу поехать на Бали" → {{"type":"someday","text":"хочу поехать на Бали"}}
+"добавь в список когда-нибудь: купить машину" → {{"type":"someday","text":"купить машину"}}
+
+ПРАВИЛА:
+— delete работает для ЛЮБОГО списка: план, someday, inbox, рутины.
+— clear_category удаляет содержимое, remove_category удаляет ярлык.
+— question ТОЛЬКО если нет никакого действия с данными.
+— ТЕКСТ сохранять дословно, ссылки не удалять.
 response = короткое подтверждение по-русски."""
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -281,8 +289,10 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
             return {"items": [{"type": "clear_category", "text": "__parse__"}],
                     "response": ""}
 
-        # delete — any phrase with delete verb → let AI determine what exactly to delete
-        # (don't intercept here, AI handles it — this block intentionally empty)
+        # show someday list
+        if _re.search(r'someday|когда.?нибудь|список мечт|мои мечты|мои идеи', t):
+            if not any(v in t for v in ('добав', 'запис', 'удал', 'убер')):
+                return {"items": [{"type": "show_someday"}], "response": ""}
 
         # show_day
         show_words = ('покажи', 'что у меня', 'что запланировано', 'мой план', 'расписани', 'план на день')
@@ -339,6 +349,24 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         return
 
     for item in items:
+        if item.get("type") == "show_someday":
+            try:
+                sb = get_sb()
+                rows = await _db(lambda: sb.table('items')
+                    .select('text').eq('chat_id', chat_id).eq('type', 'someday')
+                    .eq('status', 'active').order('id', desc=True).limit(50).execute())
+                if not rows.data:
+                    await message.answer("Список «когда-нибудь» пуст 🌙")
+                else:
+                    lines = [f"<b>🌙 когда-нибудь ({len(rows.data)})</b>", ""]
+                    for r in rows.data:
+                        lines.append(f"🌙  {_h(r['text'])}")
+                    await message.answer("\n".join(lines), parse_mode="HTML")
+                _add_to_history(chat_id, text, "показала список someday")
+            except Exception as e:
+                await message.answer(f"❌ Ошибка: {e}")
+            return
+
         if item.get("type") == "show_week_text":
             try:
                 now_vn = datetime.now(VN_TZ)
