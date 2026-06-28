@@ -272,6 +272,13 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
                 return {"items": [{"type": "show_month", "date": f"{yr}-{num:02d}-01"}],
                         "response": "Вот план месяца:"}
 
+        # clear_category — "удали/очисти/убери все/всё/содержимое [из] [категории] X"
+        clear_triggers = ('содержимое', 'всё из', 'все из', 'всё в ', 'все в ',
+                          'очист', 'убери все', 'удали все', 'удали всё')
+        if any(tr in t for tr in clear_triggers):
+            return {"items": [{"type": "clear_category", "text": "__parse__"}],
+                    "response": ""}
+
         # show_day
         show_words = ('покажи', 'что у меня', 'что запланировано', 'мой план', 'расписани', 'план на день')
         has_show = any(w in t for w in show_words) or t.startswith('план')
@@ -507,13 +514,25 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 saved.append(f"❓ Не нашла в инбоксе: «{old_text}»")
 
         elif msg_type == "clear_category":
-            cat_name = item.get("text") or item.get("old_text") or save_text
+            raw = (item.get("text") or item.get("old_text") or "")
+            # If _quick_intent set placeholder, or AI gave full sentence — extract category
+            if raw == "__parse__" or len(raw) > 30:
+                raw = text  # fall back to full user message
+            # Match against user's actual categories
+            cat_name = None
+            raw_low = raw.lower()
+            for c in inbox_cats:
+                if c.lower() in raw_low:
+                    cat_name = c
+                    break
+            if not cat_name:
+                cat_name = raw.strip() or "инбокс"
             rows_clr = await _db(lambda c=cat_name: sb.table('items')
                 .select('id')
                 .eq('chat_id', chat_id)
                 .eq('type', 'inbox')
                 .eq('status', 'active')
-                .ilike('time', f'%{c}%')
+                .ilike('time', c)
                 .execute())
             if rows_clr.data:
                 for r in rows_clr.data:
@@ -521,7 +540,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                     await _db(lambda f=rid: sb.table('items').delete().eq('id', f).execute())
                 saved.append(f"🗑 Удалила {len(rows_clr.data)} эл. из «{cat_name}»")
             else:
-                saved.append(f"✨ В «{cat_name}» и так ничего не было")
+                saved.append(f"✨ В «{cat_name}» ничего не нашла (категория: {cat_name!r})")
 
         elif msg_type == "remove_category":
             old_text = item.get("old_text", save_text)
