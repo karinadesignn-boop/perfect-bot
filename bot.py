@@ -305,11 +305,11 @@ async def process_and_save(chat_id: int, text: str, message: Message):
     now_vn = datetime.now(VN_TZ)
     today_str = now_vn.date().strftime('%Y-%m-%d')
     tomorrow_str = (now_vn.date() + timedelta(days=1)).strftime('%Y-%m-%d')
+    inbox_cats = await get_inbox_categories(chat_id)
     quick = _quick_intent(text, today_str, tomorrow_str)
     if quick:
         result = quick
     else:
-        inbox_cats = await get_inbox_categories(chat_id)
         try:
             result = await classify_message(text, history, inbox_cats)
         except Exception as e:
@@ -631,6 +631,13 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 saved.append(f"❓ Не нашла «{old_text}» для изменения")
         else:
             category = item.get("category") if msg_type == "inbox" else None
+            # Normalize category to exact stored name (case-insensitive match)
+            if category and inbox_cats:
+                low = category.lower()
+                for c in inbox_cats:
+                    if c.lower() == low or low in c.lower() or c.lower() in low:
+                        category = c
+                        break
             store_time = category if category else item_time
 
             # Duplicate check: same type + text starts with same ~40 chars
@@ -919,7 +926,7 @@ async def inbox_category_cb(callback: CallbackQuery):
             .eq('chat_id', chat_id)
             .eq('type', 'inbox')
             .eq('status', 'active')
-            .eq('time', c)
+            .ilike('time', c)
             .order('created_at', desc=True)
             .limit(30)
             .execute())
