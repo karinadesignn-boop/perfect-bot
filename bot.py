@@ -137,14 +137,17 @@ show_week_text — план недели текстом.
 show_month — план месяца картинкой. date=YYYY-MM-01.
 routine — ежедневная привычка.
 weekly — привычка по дням недели. day_of_week: 0=пн..6=вс.
-inbox — задача без даты. category из: {', '.join(f'"{c}"' for c in (inbox_cats or DEFAULT_INBOX_CATEGORIES))}
+inbox — задача/книга/ссылка без даты. category из: {', '.join(f'"{c}"' for c in (inbox_cats or DEFAULT_INBOX_CATEGORIES))}. Список → несколько объектов с одной category.
 someday — идея/мечта без срока.
 reminder — духовная фраза в хранилище.
 practice — телесная практика в хранилище.
 lifehack — лайфхак в хранилище.
-add_category / remove_category — управление категориями инбокса.
+add_category — добавить новую категорию инбокса. text=название.
+remove_category — удалить САМУ КАТЕГОРИЮ (ярлык). Только если явно говорят «удали категорию X».
+clear_category — удалить ВСЕ ЭЛЕМЕНТЫ внутри категории (книги, задачи и т.д.). text=название категории. Когда: «удали все книги», «очисти категорию книги», «убери всё из X».
 question — вопрос не про планы.
 
+ВАЖНО: «удали книги/задачи/элементы из категории» → clear_category, НЕ remove_category.
 ВАЖНО: если пользователь просит записать/добавить/внести/запланировать → plan (не show_month/show_day).
 ТЕКСТ: дословно, ссылки не удалять.
 response = короткое подтверждение по-русски."""
@@ -157,7 +160,7 @@ response = короткое подтверждение по-русски."""
     response = await groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=messages,
-        max_tokens=600,
+        max_tokens=1500,
         response_format={"type": "json_object"},
     )
 
@@ -475,6 +478,23 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             }).execute())
             saved.append(f"✅ Категория добавлена: «{cat_name}»")
 
+        elif msg_type == "clear_category":
+            cat_name = item.get("text") or item.get("old_text") or save_text
+            rows_clr = await _db(lambda c=cat_name: sb.table('items')
+                .select('id')
+                .eq('chat_id', chat_id)
+                .eq('type', 'inbox')
+                .eq('status', 'active')
+                .ilike('time', f'%{c}%')
+                .execute())
+            if rows_clr.data:
+                for r in rows_clr.data:
+                    rid = r['id']
+                    await _db(lambda f=rid: sb.table('items').delete().eq('id', f).execute())
+                saved.append(f"🗑 Удалила {len(rows_clr.data)} эл. из «{cat_name}»")
+            else:
+                saved.append(f"✨ В «{cat_name}» и так ничего не было")
+
         elif msg_type == "remove_category":
             old_text = item.get("old_text", save_text)
             found = await _find_item(chat_id, old_text)
@@ -585,13 +605,18 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             category = item.get("category") if msg_type == "inbox" else None
             store_time = category if category else item_time
 
-            # Duplicate check: same type + same text + same date → skip
-            dup_q = sb.table('items').select('id').eq('chat_id', chat_id).eq('type', msg_type).eq('status', 'active').ilike('text', save_text)
+            # Duplicate check: same type + text starts with same ~40 chars
+            dup_prefix = save_text[:40].strip()
+            dup_q = (sb.table('items').select('id').eq('chat_id', chat_id)
+                     .eq('type', msg_type).eq('status', 'active')
+                     .ilike('text', f'{dup_prefix}%'))
             if item_date:
                 dup_q = dup_q.eq('date', item_date)
+            if category:
+                dup_q = dup_q.ilike('time', f'%{category}%')
             dup = await _db(lambda q=dup_q: q.limit(1).execute())
             if dup.data:
-                saved.append(f"↩️ уже есть: «{save_text}»")
+                saved.append(f"↩️ уже есть: «{save_text[:50]}»")
                 continue
 
             await _db(lambda st=save_text, mt=msg_type, d=item_date, t=store_time:
