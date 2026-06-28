@@ -912,8 +912,8 @@ async def get_inbox_categories(chat_id: int) -> list[str]:
 async def inbox_cmd(message: Message):
     cats = await get_inbox_categories(message.chat.id)
     kb = InlineKeyboardBuilder()
-    for cat in cats:
-        kb.button(text=cat, callback_data=f"incat:{cat[:40]}")
+    for i, cat in enumerate(cats):
+        kb.button(text=cat, callback_data=f"incat:{i}")  # index, not name — avoids 64-byte limit
     kb.button(text="📋 все", callback_data="incat:__all__")
     kb.adjust(3)
     cat_list = "\n".join(f"🧿 {c}" for c in cats)
@@ -927,11 +927,13 @@ async def inbox_cmd(message: Message):
 @dp.callback_query(F.data.startswith("incat:"))
 async def inbox_category_cb(callback: CallbackQuery):
     await callback.answer()  # dismiss spinner immediately
-    cat = callback.data[len("incat:"):]
+    ref = callback.data[len("incat:"):]
     chat_id = callback.from_user.id
     try:
         sb = get_sb()
-        if cat == '__all__':
+        if ref == '__all__':
+            cat = None
+            label = "все"
             rows = await _db(lambda: sb.table('items')
                 .select('text, time')
                 .eq('chat_id', chat_id)
@@ -940,8 +942,14 @@ async def inbox_category_cb(callback: CallbackQuery):
                 .order('created_at', desc=True)
                 .limit(100)
                 .execute())
-            label = "все"
         else:
+            cats = await get_inbox_categories(chat_id)
+            try:
+                cat = cats[int(ref)]
+            except (ValueError, IndexError):
+                await callback.message.answer("❌ Категория не найдена, открой /inbox заново")
+                return
+            label = cat
             rows = await _db(lambda c=cat: sb.table('items')
                 .select('text, time')
                 .eq('chat_id', chat_id)
@@ -951,7 +959,6 @@ async def inbox_category_cb(callback: CallbackQuery):
                 .order('created_at', desc=True)
                 .limit(100)
                 .execute())
-            label = cat
         if not rows.data:
             await callback.message.answer(f"В «{label}» пока пусто ✨")
         else:
