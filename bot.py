@@ -318,14 +318,27 @@ _DELETE_STOP = ('категорию',)  # → remove_category, not delete
 
 
 def _strip_delete_verb(t: str) -> str:
-    """Remove leading delete verb and trailing list context to get item keywords."""
+    """Remove leading delete verb and list context, return item keywords."""
     t = _re.sub(r'^(удали|удалить|убери|убрать|вычеркни|вычеркнуть|сотри|стереть)\s*', '', t)
+    # "из рутины задачи: ключевое слово" → берём всё после двоеточия
+    colon = _re.search(r'[:]\s*(.+)$', t, _re.DOTALL)
+    if colon:
+        candidate = colon.group(1).strip()
+        if len(candidate) > 2:
+            return candidate
+    # иначе убираем контекстный хвост "из рутин", "из плана" и т.д.
     t = _re.sub(r'\s+(из\s+\S+|с\s+\S+|в\s+\S+|инбокса?|someday|рутин\w*|плана?|списка?)$', '', t)
     return t.strip()
 
 
 _RESTORE_TRIGGERS = ('верни', 'восстанови', 'отмени удаление', 'отменить удаление',
                      'верни назад', 'верни обратно', 'что удалила', 'что поудаляла')
+
+
+_DR_RE = _re.compile(
+    r'каждый день.{0,40}?(\d{1,2}:\d{2}).{0,60}?[:：]\s*(.+)',
+    _re.DOTALL | _re.IGNORECASE
+)
 
 
 def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0) -> dict | None:
@@ -336,9 +349,21 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0
         if any(tr in t for tr in _RESTORE_TRIGGERS):
             return {"items": [{"type": "restore_last"}], "response": ""}
 
+        # 0.5 Вырезаем daily_reminder ДО всего остального —
+        # иначе "каждый" в конце сообщения ломает детект удаления
+        extra_items = []
+        dr_m = _DR_RE.search(text)
+        if dr_m:
+            dr_time, dr_text = dr_m.group(1), dr_m.group(2).strip()
+            if dr_text:
+                extra_items.append({"type": "daily_reminder", "text": dr_text, "time": dr_time})
+            text = (text[:dr_m.start()] + text[dr_m.end():]).strip()
+            t = text.lower().strip()
+
         # 1. clear_category — до всего (убери все / удали все / очисти)
         if any(tr in t for tr in _CLEAR_TRIGGERS) or _CLEAR_RE.search(t):
-            return {"items": [{"type": "clear_category", "text": "__parse__"}], "response": ""}
+            items = [{"type": "clear_category", "text": "__parse__"}] + extra_items
+            return {"items": items, "response": ""}
 
         # 2. single delete — если есть глагол удаления и это НЕ "удали категорию"
         has_del = any(v in t for v in _DELETE_VERBS)
@@ -375,18 +400,19 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0
                 if keywords_list:
                     return {
                         "items": [{"type": "delete_all", "old_text": kw, "scope": "plan"}
-                                  for kw in keywords_list],
+                                  for kw in keywords_list] + extra_items,
                         "response": ""
                     }
 
             if has_multi or has_day_ref:
+                if extra_items:
+                    return {"items": extra_items, "response": ""}
                 return None  # AI
             keywords = _strip_delete_verb(t)
             if keywords:
-                # Determine scope from context words
                 if any(w in t for w in ('someday', 'когда-нибудь', 'мечт')):
                     scope = 'someday'
-                elif any(w in t for w in ('рутин', 'привычк')):
+                elif any(w in t for w in ('рутин', 'привычк', 'ежедневн')):
                     scope = 'routine'
                 elif any(w in t for w in ('инбокс', 'inbox')):
                     scope = 'inbox'
@@ -397,21 +423,13 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0
                 elif any(w in t for w in ('лайфхак',)):
                     scope = 'lifehack'
                 else:
-                    # Use last shown list as context, fallback to None (search all)
                     scope = _last_shown_type.get(chat_id) or None
-                return {"items": [{"type": "delete", "old_text": keywords, "scope": scope}], "response": ""}
+                return {"items": [{"type": "delete", "old_text": keywords, "scope": scope}]
+                        + extra_items, "response": ""}
 
-        # 2.5 daily_reminder — "каждый день в HH:MM [глагол]: текст"
-        dr_match = _re.search(
-            r'каждый день.{0,30}?(\d{1,2}:\d{2}).{0,50}?[:：]\s*(.+)',
-            text, _re.DOTALL | _re.IGNORECASE
-        )
-        if dr_match:
-            dr_time = dr_match.group(1)
-            dr_text = dr_match.group(2).strip()
-            if dr_text:
-                return {"items": [{"type": "daily_reminder", "text": dr_text, "time": dr_time}],
-                        "response": f"⏰ Буду присылать каждый день в {dr_time}"}
+        # extra_items only (daily_reminder without delete)
+        if extra_items:
+            return {"items": extra_items, "response": f"⏰ Буду присылать каждый день в {extra_items[0]['time']}"}
 
         # 3. save/edit verbs → AI
         if any(v in t for v in _SAVE_VERBS):
