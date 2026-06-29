@@ -167,7 +167,7 @@ question — только если это вопрос без действия.
 — clear_category удаляет содержимое, remove_category удаляет ярлык.
 — question ТОЛЬКО если нет никакого действия с данными.
 — ТЕКСТ сохранять дословно, ссылки не удалять.
-— time=null если время НЕ указано явно. НИКОГДА не ставь "00:00".
+— time: ставь ТОЛЬКО если пользователь ЯВНО написал время (число + час/мин/утра/вечера/HH:MM). Иначе ВСЕГДА null. Запрещено выдумывать время.
 response = короткое подтверждение по-русски."""
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -555,6 +555,10 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         item_time = item.get("time")
         if item_time in ("00:00", "0:00", "00:00:00"):
             item_time = None
+        # Discard AI-hallucinated time: if user text has no digits that look like time, reject it
+        if item_time and not _re.search(r'\d{1,2}[:\s]?\d{0,2}\s*(?:час|утра|вечера|ночи|дня|am|pm|:)', text.lower()):
+            if not _re.search(r'\b\d{1,2}:\d{2}\b', text):
+                item_time = None
 
         if msg_type == "add_category":
             cat_name = save_text.strip()
