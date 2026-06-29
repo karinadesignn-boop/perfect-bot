@@ -49,6 +49,7 @@ VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
 # Conversation history per chat: last 8 turns so AI understands "эту", "ту", "её" etc.
 _chat_history: dict[int, list[dict]] = {}
+_last_shown_type: dict[int, str] = {}  # tracks what list was last shown per chat
 MAX_HISTORY_TURNS = 8
 
 
@@ -217,7 +218,7 @@ async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None,
             "%" + "%".join(terms[:3]) + "%",
             *[f"%{t}%" for t in terms[:4]]
         ]:
-            q = (sb.table('items').select('id, text')
+            q = (sb.table('items').select('id, text, type, date')
                  .eq('chat_id', chat_id).eq('status', 'active')
                  .ilike('text', pattern).order('created_at', desc=True).limit(1))
             if hint_type:
@@ -321,7 +322,7 @@ _RESTORE_TRIGGERS = ('верни', 'восстанови', 'отмени уда�
                      'верни назад', 'верни обратно', 'что удалила', 'что поудаляла')
 
 
-def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
+def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0) -> dict | None:
     try:
         t = text.lower().strip()
 
@@ -375,8 +376,13 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
                     scope = 'inbox'
                 elif any(w in t for w in ('послани', 'хранилищ', 'цитат', 'фраз')):
                     scope = 'reminder'
+                elif any(w in t for w in ('практик',)):
+                    scope = 'practice'
+                elif any(w in t for w in ('лайфхак',)):
+                    scope = 'lifehack'
                 else:
-                    scope = 'plan'
+                    # Use last shown list as context, fallback to None (search all)
+                    scope = _last_shown_type.get(chat_id) or None
                 return {"items": [{"type": "delete", "old_text": keywords, "scope": scope}], "response": ""}
 
         # 3. save/edit verbs → AI
@@ -438,7 +444,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
     today_str = now_vn.date().strftime('%Y-%m-%d')
     tomorrow_str = (now_vn.date() + timedelta(days=1)).strftime('%Y-%m-%d')
     inbox_cats = await get_inbox_categories(chat_id)
-    quick = _quick_intent(text, today_str, tomorrow_str)
+    quick = _quick_intent(text, today_str, tomorrow_str, chat_id=chat_id)
     if quick:
         result = quick
     else:
@@ -827,7 +833,14 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             found = await _find_item(chat_id, old_text, hint_date=hint, hint_type=scope)
             if found:
                 await _soft_delete(found['id'])
-                saved.append(f"🗑 Удалила: «{found['text']}»")
+                _type_labels = {
+                    'plan': f"план{' ' + found['date'] if found.get('date') else ''}",
+                    'routine': 'рутины', 'someday': 'someday', 'reminder': 'послания',
+                    'inbox': 'инбокс', 'practice': 'практики', 'lifehack': 'лайфхаки',
+                    'daily_reminder': 'ежедневные напоминания',
+                }
+                where = _type_labels.get(found.get('type', ''), found.get('type', ''))
+                saved.append(f"🗑 Удалила из [{where}]: «{found['text']}»")
             else:
                 saved.append(f"❓ Не нашла «{old_text}» — возможно уже удалено")
         elif msg_type == "update":
@@ -969,6 +982,7 @@ async def help_cmd(message: Message):
 
 @dp.message(Command("routines"))
 async def routines_cmd(message: Message):
+    _last_shown_type[message.chat.id] = 'routine'
     sb = get_sb()
     rows = await _db(lambda: sb.table('items')
         .select('*')
@@ -1023,6 +1037,7 @@ async def _send_list(message: Message, header: str, items: list[str], empty_msg:
 
 @dp.message(Command("someday"))
 async def someday_cmd(message: Message):
+    _last_shown_type[message.chat.id] = 'someday'
     try:
         sb = get_sb()
         rows = await _db(lambda: sb.table('items')
@@ -1043,6 +1058,7 @@ async def someday_cmd(message: Message):
 
 @dp.message(Command("reminders"))
 async def reminders_cmd(message: Message):
+    _last_shown_type[message.chat.id] = 'reminder'
     try:
         sb = get_sb()
         rows = await _db(lambda: sb.table('items')
@@ -1063,6 +1079,7 @@ async def reminders_cmd(message: Message):
 
 @dp.message(Command("practices"))
 async def practices_cmd(message: Message):
+    _last_shown_type[message.chat.id] = 'practice'
     try:
         sb = get_sb()
         rows = await _db(lambda: sb.table('items')
@@ -1106,6 +1123,7 @@ async def daily_cmd(message: Message):
 
 @dp.message(Command("lifehacks"))
 async def lifehacks_cmd(message: Message):
+    _last_shown_type[message.chat.id] = 'lifehack'
     try:
         sb = get_sb()
         rows = await _db(lambda: sb.table('items')
