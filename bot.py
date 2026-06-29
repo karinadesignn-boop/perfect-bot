@@ -254,25 +254,51 @@ _MONTHS = [
 ]
 
 _SAVE_VERBS = ('добав', 'запис', 'занес', 'внес', 'поставь', 'сохран', 'создай',
-               'удал', 'убер', 'убри', 'скорректир', 'измени', 'перенес', 'исправ')
+               'скорректир', 'измени', 'перенес', 'исправ')
+
+_DELETE_VERBS = ('удали', 'удалить', 'убери', 'убрать', 'убери', 'вычеркни',
+                 'вычеркнуть', 'сотри', 'стереть', 'удал', 'убер', 'убри')
+
+_CLEAR_TRIGGERS = ('содержимое', 'всё из', 'все из', 'всё в ', 'все в ',
+                   'очист', 'убери все', 'удали все', 'удали всё', 'убрать все',
+                   'удалить все', 'убрать всё', 'удалить всё')
+
+_DELETE_STOP = ('категорию',)  # → remove_category, not delete
+
+
+def _strip_delete_verb(t: str) -> str:
+    """Remove leading delete verb and trailing list context to get item keywords."""
+    t = _re.sub(r'^(удали|удалить|убери|убрать|вычеркни|вычеркнуть|сотри|стереть)\s*', '', t)
+    t = _re.sub(r'\s+(из\s+\S+|с\s+\S+|в\s+\S+|инбокса?|someday|рутин\w*|плана?|списка?)$', '', t)
+    return t.strip()
 
 
 def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
-    """Fast path for show-only requests. Returns classify-format result or None.
-    Only intercepts clear view requests — save/update/delete always go to AI."""
     try:
         t = text.lower().strip()
 
+        # 1. clear_category — ПЕРВЫМ, до всего (убери все / удали все / очисти)
+        if any(tr in t for tr in _CLEAR_TRIGGERS):
+            return {"items": [{"type": "clear_category", "text": "__parse__"}], "response": ""}
+
+        # 2. single delete — если есть глагол удаления и это НЕ "удали категорию"
+        has_del = any(v in t for v in _DELETE_VERBS)
+        if has_del and not any(s in t for s in _DELETE_STOP):
+            keywords = _strip_delete_verb(t)
+            if keywords:
+                return {"items": [{"type": "delete", "old_text": keywords}], "response": ""}
+
+        # 3. save/edit verbs → AI
         if any(v in t for v in _SAVE_VERBS):
             return None
 
-        # show_week
+        # 4. show_week
         if _re.search(r'недел[юяеи]|на этой неделе|план недел', t):
             if 'текст' in t or 'список' in t:
                 return {"items": [{"type": "show_week_text"}], "response": "Вот план недели:"}
             return {"items": [{"type": "show_week"}], "response": "Вот план недели:"}
 
-        # show_month — month name without preceding digit
+        # 5. show_month
         now_vn = datetime.now(VN_TZ)
         for search_pat, digit_check, num in _MONTHS:
             if _re.search(search_pat, t):
@@ -282,19 +308,11 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
                 return {"items": [{"type": "show_month", "date": f"{yr}-{num:02d}-01"}],
                         "response": "Вот план месяца:"}
 
-        # clear_category — "удали/очисти/убери все/всё/содержимое [из] [категории] X"
-        clear_triggers = ('содержимое', 'всё из', 'все из', 'всё в ', 'все в ',
-                          'очист', 'убери все', 'удали все', 'удали всё')
-        if any(tr in t for tr in clear_triggers):
-            return {"items": [{"type": "clear_category", "text": "__parse__"}],
-                    "response": ""}
-
-        # show someday list
+        # 6. show someday
         if _re.search(r'someday|когда.?нибудь|список мечт|мои мечты|мои идеи', t):
-            if not any(v in t for v in ('добав', 'запис', 'удал', 'убер')):
-                return {"items": [{"type": "show_someday"}], "response": ""}
+            return {"items": [{"type": "show_someday"}], "response": ""}
 
-        # show_day
+        # 7. show_day
         show_words = ('покажи', 'что у меня', 'что запланировано', 'мой план', 'расписани', 'план на день')
         has_show = any(w in t for w in show_words) or t.startswith('план')
         has_today = 'сегодня' in t
