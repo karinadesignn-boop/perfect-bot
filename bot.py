@@ -354,7 +354,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 sb = get_sb()
                 rows = await _db(lambda: sb.table('items')
                     .select('text').eq('chat_id', chat_id).eq('type', 'someday')
-                    .eq('status', 'active').order('id', desc=True).limit(50).execute())
+                    .eq('status', 'active').order('id').limit(50).execute())
                 if not rows.data:
                     await message.answer("Список «когда-нибудь» пуст 🌙")
                 else:
@@ -878,7 +878,7 @@ async def someday_cmd(message: Message):
             .eq('chat_id', message.chat.id)
             .eq('type', 'someday')
             .eq('status', 'active')
-            .order('id', desc=True)
+            .order('id')
             .limit(50)
             .execute())
         await _send_list(message, "🌙 когда-нибудь",
@@ -898,7 +898,7 @@ async def reminders_cmd(message: Message):
             .eq('chat_id', message.chat.id)
             .eq('type', 'reminder')
             .eq('status', 'active')
-            .order('created_at', desc=True)
+            .order('created_at')
             .limit(50)
             .execute())
         await _send_list(message, "🔮 мои послания",
@@ -918,7 +918,7 @@ async def practices_cmd(message: Message):
             .eq('chat_id', message.chat.id)
             .eq('type', 'practice')
             .eq('status', 'active')
-            .order('created_at', desc=True)
+            .order('created_at')
             .limit(50)
             .execute())
         await _send_list(message, "🌿 телесные практики",
@@ -938,7 +938,7 @@ async def lifehacks_cmd(message: Message):
             .eq('chat_id', message.chat.id)
             .eq('type', 'lifehack')
             .eq('status', 'active')
-            .order('created_at', desc=True)
+            .order('created_at')
             .limit(100)
             .execute())
         await _send_list(message, "💡 лайфхаки",
@@ -1002,7 +1002,7 @@ async def inbox_category_cb(callback: CallbackQuery):
                 .eq('chat_id', chat_id)
                 .eq('type', 'inbox')
                 .eq('status', 'active')
-                .order('created_at', desc=True)
+                .order('created_at')
                 .limit(100)
                 .execute())
         else:
@@ -1019,7 +1019,7 @@ async def inbox_category_cb(callback: CallbackQuery):
                 .eq('type', 'inbox')
                 .eq('status', 'active')
                 .ilike('time', c)
-                .order('created_at', desc=True)
+                .order('created_at')
                 .limit(100)
                 .execute())
         def _he(s: str) -> str:
