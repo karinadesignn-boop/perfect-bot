@@ -129,7 +129,7 @@ JSON: {{"items":[{{"type":"...","text":"...","date":"...","time":"...","old_text
 ТИПЫ:
 plan — новое дело на дату. date=YYYY-MM-DD, time=HH:MM или null если время не указано. text дословно.
 update — изменить существующее. old_text=ключевые слова, новые date/time.
-delete — удалить одно дело. old_text=ключевые слова.
+delete — удалить одно дело. old_text=ключевые слова. scope=тип списка (plan/someday/routine/reminder/inbox/practice/lifehack).
 delete_day — очистить весь день. date=YYYY-MM-DD.
 show_day — показать план дня ("покажи", "скинь", "что на", "план на"). date=YYYY-MM-DD.
 show_week — план недели картинкой.
@@ -143,7 +143,7 @@ reminder — духовная фраза. practice — практика. lifehac
 move_to_plan — из инбокса в план. old_text=ключевые слова, date=дата.
 add_category — новая категория инбокса. remove_category — удалить категорию (ярлык).
 clear_category — удалить ВСЕ элементы внутри категории. text=название категории.
-delete_all — удалить ВСЕ вхождения дела (по всем дням/спискам). old_text=ключевые слова.
+delete_all — удалить ВСЕ вхождения дела. old_text=ключевые слова. scope=тип списка (plan/someday/routine/reminder/inbox/practice/lifehack).
 daily_reminder — фраза/напоминание каждый день в определённое время. text=текст фразы, time=HH:MM.
 question — только если это вопрос без действия.
 
@@ -153,19 +153,21 @@ question — только если это вопрос без действия.
 "скинь план дня на 6 июля" → {{"type":"show_day","date":"2026-07-06"}}
 "покажи что на 15 августа" → {{"type":"show_day","date":"2026-08-15"}}
 "что запланировано на завтра" → {{"type":"show_day","date":"{tomorrow_str}"}}
-"удали поехать на Бали" → {{"type":"delete","old_text":"поехать на Бали"}}
-"убери встречу с врачом из someday" → {{"type":"delete","old_text":"встреча врач"}}
-"вычеркни йогу из рутин" → {{"type":"delete","old_text":"йога"}}
+"удали поехать на Бали" → {{"type":"delete","old_text":"поехать на Бали","scope":"someday"}}
+"убери встречу с врачом из someday" → {{"type":"delete","old_text":"встреча врач","scope":"someday"}}
+"вычеркни йогу из рутин" → {{"type":"delete","old_text":"йога","scope":"routine"}}
+"удали встречу из плана на среду" → {{"type":"delete","old_text":"встреча","scope":"plan"}}
 "удали все книги из инбокса" → {{"type":"clear_category","text":"книги"}}
 "очисти категорию книги" → {{"type":"clear_category","text":"книги"}}
 "хочу поехать на Бали" → {{"type":"someday","text":"хочу поехать на Бали"}}
 "добавь в список когда-нибудь: купить машину" → {{"type":"someday","text":"купить машину"}}
-"удали из каждого дня: йога, медитация, зарядка" → [{{"type":"delete_all","old_text":"йога"}},{{"type":"delete_all","old_text":"медитация"}},{{"type":"delete_all","old_text":"зарядка"}}]
-"убери медитацию из понедельника" → {{"type":"delete","old_text":"медитация","date":"{today_str}"}}
+"удали из каждого дня: йога, медитация" → [{{"type":"delete_all","old_text":"йога","scope":"plan"}},{{"type":"delete_all","old_text":"медитация","scope":"plan"}}]
+"убери медитацию из понедельника" → {{"type":"delete","old_text":"медитация","scope":"plan","date":"{today_str}"}}
 
 ПРАВИЛА:
 — delete работает для ЛЮБОГО списка: план, someday, inbox, рутины.
-— delete_all удаляет ВСЕ вхождения по всем дням. Используй когда просят "из каждого дня", "везде", список пунктов.
+— delete/delete_all: ВСЕГДА указывай scope. "из плана"/"из каждого дня"/"из расписания" → scope="plan". "из someday" → scope="someday". "из рутин" → scope="routine". "из посланий/хранилища" → scope="reminder". "из инбокса" → scope="inbox". Без контекста → scope="plan".
+— delete_all: удаляет ВСЕ вхождения в указанном scope. Используй когда "из каждого дня", "везде", список пунктов.
 — При списке пунктов для удаления — возвращай ОТДЕЛЬНЫЙ delete/delete_all для каждого пункта.
 — clear_category удаляет содержимое, remove_category удаляет ярлык.
 — question ТОЛЬКО если нет никакого действия с данными.
@@ -202,8 +204,9 @@ def _add_to_history(chat_id: int, user_text: str, bot_reply: str):
         _chat_history[chat_id] = history[-(MAX_HISTORY_TURNS * 2):]
 
 
-async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None) -> dict | None:
-    """Find active item by keywords. hint_date narrows search to that date first."""
+async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None,
+                     hint_type: str | None = None) -> dict | None:
+    """Find active item by keywords. hint_date/hint_type narrow the search."""
     sb = get_sb()
     terms = [w for w in keywords.lower().split() if len(w) > 1]
     if not terms:
@@ -217,6 +220,8 @@ async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None) 
             q = (sb.table('items').select('id, text')
                  .eq('chat_id', chat_id).eq('status', 'active')
                  .ilike('text', pattern).order('created_at', desc=True).limit(1))
+            if hint_type:
+                q = q.eq('type', hint_type)
             if extra_filter:
                 q = extra_filter(q)
             row = await _db(lambda _q=q: _q.execute())
@@ -234,8 +239,8 @@ async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None) 
     return await _search()
 
 
-async def _find_all_items(chat_id: int, keywords: str) -> list[dict]:
-    """Find ALL active items matching keywords (for bulk delete across all days)."""
+async def _find_all_items(chat_id: int, keywords: str, hint_type: str | None = None) -> list[dict]:
+    """Find ALL active items matching keywords. hint_type restricts to one item type."""
     sb = get_sb()
     terms = [w for w in keywords.lower().split() if len(w) > 2]
     if not terms:
@@ -246,6 +251,8 @@ async def _find_all_items(chat_id: int, keywords: str) -> list[dict]:
         q = (sb.table('items').select('id, text')
              .eq('chat_id', chat_id).eq('status', 'active')
              .ilike('text', pattern))
+        if hint_type:
+            q = q.eq('type', hint_type)
         res = await _db(lambda _q=q: _q.execute())
         for r in (res.data or []):
             if r['id'] not in seen_ids:
@@ -324,7 +331,18 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
                 return None  # AI разберёт список / конкретный день
             keywords = _strip_delete_verb(t)
             if keywords:
-                return {"items": [{"type": "delete", "old_text": keywords}], "response": ""}
+                # Determine scope from context words
+                if any(w in t for w in ('someday', 'когда-нибудь', 'мечт')):
+                    scope = 'someday'
+                elif any(w in t for w in ('рутин', 'привычк')):
+                    scope = 'routine'
+                elif any(w in t for w in ('инбокс', 'inbox')):
+                    scope = 'inbox'
+                elif any(w in t for w in ('послани', 'хранилищ', 'цитат', 'фраз')):
+                    scope = 'reminder'
+                else:
+                    scope = 'plan'
+                return {"items": [{"type": "delete", "old_text": keywords, "scope": scope}], "response": ""}
 
         # 3. save/edit verbs → AI
         if any(v in t for v in _SAVE_VERBS):
@@ -734,7 +752,8 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
         elif msg_type == "delete_all":
             old_text = item.get("old_text", "")
-            all_found = await _find_all_items(chat_id, old_text)
+            scope = item.get("scope") or "plan"
+            all_found = await _find_all_items(chat_id, old_text, hint_type=scope)
             if all_found:
                 for f in all_found:
                     fid = f['id']
@@ -745,8 +764,9 @@ async def process_and_save(chat_id: int, text: str, message: Message):
 
         elif msg_type == "delete":
             old_text = item.get("old_text", "")
+            scope = item.get("scope") or None
             hint = item.get("date") or None
-            found = await _find_item(chat_id, old_text, hint_date=hint)
+            found = await _find_item(chat_id, old_text, hint_date=hint, hint_type=scope)
             if found:
                 fid = found['id']
                 await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
