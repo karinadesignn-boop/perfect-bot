@@ -127,7 +127,7 @@ async def classify_message(text: str, history: list[dict] | None = None, inbox_c
 JSON: {{"items":[{{"type":"...","text":"...","date":"...","time":"...","old_text":"...","day_of_week":null,"category":null}}],"response":"..."}}
 
 ТИПЫ:
-plan — новое дело на дату. date=YYYY-MM-DD, time=HH:MM. text дословно.
+plan — новое дело на дату. date=YYYY-MM-DD, time=HH:MM или null если время не указано. text дословно.
 update — изменить существующее. old_text=ключевые слова, новые date/time.
 delete — удалить одно дело. old_text=ключевые слова.
 delete_day — очистить весь день. date=YYYY-MM-DD.
@@ -159,6 +159,7 @@ question — только если это вопрос без действия.
 — clear_category удаляет содержимое, remove_category удаляет ярлык.
 — question ТОЛЬКО если нет никакого действия с данными.
 — ТЕКСТ сохранять дословно, ссылки не удалять.
+— time=null если время НЕ указано явно. НИКОГДА не ставь "00:00".
 response = короткое подтверждение по-русски."""
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -471,7 +472,8 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 if plans_res.data:
                     lines.append("🌙 *планы*")
                     for p in plans_res.data:
-                        t = f"`{p['time']}`  " if p['time'] else ""
+                        pt = p['time']
+                        t = f"`{pt}`  " if (pt and pt not in ("00:00", "0:00", "00:00:00")) else ""
                         lines.append(f"❤️‍🔥  {t}{p['text']}")
                 elif not routines:
                     lines.append("✨ день пока чистый — всё возможно")
@@ -516,6 +518,8 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         save_text = item.get("text", text)
         item_date = item.get("date")
         item_time = item.get("time")
+        if item_time in ("00:00", "0:00", "00:00:00"):
+            item_time = None
 
         if msg_type == "add_category":
             cat_name = save_text.strip()
@@ -1077,6 +1081,7 @@ async def _fetch_tasks(chat_id: int, start: date, end: date) -> dict[str, list[s
         .select('text, date, time')
         .eq('chat_id', chat_id)
         .eq('type', 'plan')
+        .neq('type', 'routine')
         .eq('status', 'active')
         .gte('date', start.strftime('%Y-%m-%d'))
         .lte('date', end.strftime('%Y-%m-%d'))
@@ -1086,7 +1091,8 @@ async def _fetch_tasks(chat_id: int, start: date, end: date) -> dict[str, list[s
 
     tasks: dict[str, list[str]] = {}
     for r in result.data:
-        label = f"{r['time']}  {r['text']}" if r['time'] else r['text']
+        t = r['time']
+        label = f"{t}  {r['text']}" if (t and t not in ("00:00", "0:00", "00:00:00")) else r['text']
         tasks.setdefault(r['date'], []).append(label)
     return tasks
 
@@ -1412,7 +1418,7 @@ async def plan_list_cmd(message: Message):
     await message.answer("📋 Все активные планы (нажми 🗑 чтобы удалить):")
     for r in rows.data:
         date_str = f"📅 {r['date']}" if r['date'] else "📅 без даты"
-        time_str = f"  {r['time']}" if r['time'] else ""
+        time_str = f"  {r['time']}" if (r['time'] and r['time'] not in ("00:00", "0:00", "00:00:00")) else ""
         label = f"{date_str}{time_str}\n{r['text']}"
         await message.answer(label, reply_markup=plan_keyboard(r['id']))
 
