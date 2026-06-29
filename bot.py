@@ -162,6 +162,10 @@ question — только если это вопрос без действия.
 "очисти категорию книги" → {{"type":"clear_category","text":"книги"}}
 "хочу поехать на Бали" → {{"type":"someday","text":"хочу поехать на Бали"}}
 "добавь в список когда-нибудь: купить машину" → {{"type":"someday","text":"купить машину"}}
+"добавь в рутину: медитация" → {{"type":"routine","text":"медитация"}}
+"добавь в рутины: зарядка, йога" → [{{"type":"routine","text":"зарядка"}},{{"type":"routine","text":"йога"}}]
+"каждое воскресенье: план недели" → {{"type":"weekly","text":"план недели","day_of_week":6}}
+"каждое воскресенье добавь: план недели, анализ финансов" → [{{"type":"weekly","text":"план недели","day_of_week":6}},{{"type":"weekly","text":"анализ финансов","day_of_week":6}}]
 "удали из каждого дня: йога, медитация" → [{{"type":"delete_all","old_text":"йога","scope":"plan"}},{{"type":"delete_all","old_text":"медитация","scope":"plan"}}]
 "убери медитацию из понедельника" → {{"type":"delete","old_text":"медитация","scope":"plan","date":"{today_str}"}}
 
@@ -305,8 +309,10 @@ _DELETE_VERBS = ('удали', 'удалить', 'убери', 'убрать', '
                  'вычеркнуть', 'сотри', 'стереть', 'удал', 'убер', 'убри')
 
 _CLEAR_TRIGGERS = ('содержимое', 'всё из', 'все из', 'всё в ', 'все в ',
-                   'очист', 'убери все', 'удали все', 'удали всё', 'убрать все',
+                   'убери все', 'удали все', 'удали всё', 'убрать все',
                    'удалить все', 'убрать всё', 'удалить всё')
+# "очист" отдельно — чтобы "почистить" не триггерило (нужна граница слова)
+_CLEAR_RE = _re.compile(r'\bочист')
 
 _DELETE_STOP = ('категорию',)  # → remove_category, not delete
 
@@ -331,7 +337,7 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0
             return {"items": [{"type": "restore_last"}], "response": ""}
 
         # 1. clear_category — до всего (убери все / удали все / очисти)
-        if any(tr in t for tr in _CLEAR_TRIGGERS):
+        if any(tr in t for tr in _CLEAR_TRIGGERS) or _CLEAR_RE.search(t):
             return {"items": [{"type": "clear_category", "text": "__parse__"}], "response": ""}
 
         # 2. single delete — если есть глагол удаления и это НЕ "удали категорию"
@@ -384,6 +390,18 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0
                     # Use last shown list as context, fallback to None (search all)
                     scope = _last_shown_type.get(chat_id) or None
                 return {"items": [{"type": "delete", "old_text": keywords, "scope": scope}], "response": ""}
+
+        # 2.5 daily_reminder — "каждый день в HH:MM [глагол]: текст"
+        dr_match = _re.search(
+            r'каждый день.{0,30}?(\d{1,2}:\d{2}).{0,50}?[:：]\s*(.+)',
+            text, _re.DOTALL | _re.IGNORECASE
+        )
+        if dr_match:
+            dr_time = dr_match.group(1)
+            dr_text = dr_match.group(2).strip()
+            if dr_text:
+                return {"items": [{"type": "daily_reminder", "text": dr_text, "time": dr_time}],
+                        "response": f"⏰ Буду присылать каждый день в {dr_time}"}
 
         # 3. save/edit verbs → AI
         if any(v in t for v in _SAVE_VERBS):
