@@ -144,9 +144,12 @@ move_to_plan — из инбокса в план. old_text=ключевые сл
 add_category — новая категория инбокса. remove_category — удалить категорию (ярлык).
 clear_category — удалить ВСЕ элементы внутри категории. text=название категории.
 delete_all — удалить ВСЕ вхождения дела (по всем дням/спискам). old_text=ключевые слова.
+daily_reminder — фраза/напоминание каждый день в определённое время. text=текст фразы, time=HH:MM.
 question — только если это вопрос без действия.
 
 ПРИМЕРЫ:
+"напоминай каждый день в 9:00: сделай зарядку" → {{"type":"daily_reminder","text":"сделай зарядку","time":"09:00"}}
+"каждый день в 8:30 присылай мне: ты сильная" → {{"type":"daily_reminder","text":"ты сильная","time":"08:30"}}
 "скинь план дня на 6 июля" → {{"type":"show_day","date":"2026-07-06"}}
 "покажи что на 15 августа" → {{"type":"show_day","date":"2026-08-15"}}
 "что запланировано на завтра" → {{"type":"show_day","date":"{tomorrow_str}"}}
@@ -663,6 +666,17 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 else:
                     saved.append(f"❓ Категория «{old_text}» не найдена")
 
+        elif msg_type == "daily_reminder":
+            if not item_time:
+                saved.append("❓ Укажи время — например: «каждый день в 9:00: твоя фраза»")
+            else:
+                await _db(lambda st=save_text, tm=item_time: sb.table('items').insert({
+                    'chat_id': chat_id, 'text': st, 'type': 'daily_reminder',
+                    'date': None, 'time': tm, 'status': 'active',
+                    'created_at': datetime.now().isoformat()
+                }).execute())
+                saved.append(f"⏰ Буду присылать каждый день в {item_time}: «{save_text}»")
+
         elif msg_type == "reminder":
             await _db(lambda st=save_text: sb.table('items').insert({
                 'chat_id': chat_id, 'text': st, 'type': 'reminder',
@@ -987,6 +1001,29 @@ async def practices_cmd(message: Message):
                          "Хранилище практик пустое 🌿\n\nДобавь: «добавь практику: описание»")
     except Exception as e:
         logging.error(f"practices_cmd error: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+@dp.message(Command("daily"))
+async def daily_cmd(message: Message):
+    try:
+        sb = get_sb()
+        rows = await _db(lambda: sb.table('items')
+            .select('id, text, time')
+            .eq('chat_id', message.chat.id)
+            .eq('type', 'daily_reminder')
+            .eq('status', 'active')
+            .order('time')
+            .execute())
+        if not rows.data:
+            await message.answer("Ежедневных напоминаний нет ⏰\n\nДобавь: «каждый день в 9:00: твоя фраза»")
+            return
+        await message.answer("⏰ Ежедневные напоминания (нажми 🗑 чтобы удалить):")
+        for r in rows.data:
+            label = f"⏰ {r['time']}\n{r['text']}"
+            await message.answer(label, reply_markup=plan_keyboard(r['id']))
+    except Exception as e:
+        logging.error(f"daily_cmd error: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -1630,6 +1667,7 @@ async def scheduler_loop():
     sent_evening: set[str] = set()
     sent_plans: set[str] = set()
     sent_reminders: set[str] = set()
+    sent_daily: set[str] = set()
 
     while True:
         try:
@@ -1685,12 +1723,33 @@ async def scheduler_loop():
                         except Exception as e:
                             logging.error(f"Plan reminder error: {e}")
 
+            # Daily reminders at their scheduled time
+            daily_key = f"daily:{vn_date}:{vn_hhmm}"
+            if daily_key not in sent_daily:
+                sb = get_sb()
+                _vn_hhmm2 = vn_hhmm
+                due_daily = await _db(lambda: sb.table('items')
+                    .select('*')
+                    .eq('type', 'daily_reminder')
+                    .eq('status', 'active')
+                    .eq('time', _vn_hhmm2)
+                    .execute())
+                if due_daily.data:
+                    sent_daily.add(daily_key)
+                    for r in due_daily.data:
+                        try:
+                            await bot.send_message(r['chat_id'], f"⏰ {r['text']}")
+                        except Exception as e:
+                            logging.error(f"Daily reminder error: {e}")
+
             if len(sent_evening) > 500:
                 sent_evening.clear()
             if len(sent_plans) > 2000:
                 sent_plans.clear()
             if len(sent_reminders) > 500:
                 sent_reminders.clear()
+            if len(sent_daily) > 2000:
+                sent_daily.clear()
 
         except Exception as e:
             logging.error(f"Scheduler loop error: {e}")
@@ -1713,6 +1772,7 @@ async def main():
         {"command": "month",       "description": "🗓 План на месяц картинкой"},
         {"command": "plan_list",   "description": "📋 Список планов (удалить/отметить)"},
         {"command": "routines",    "description": "🔄 Ежедневные рутины"},
+        {"command": "daily",       "description": "⏰ Ежедневные напоминания по времени"},
         {"command": "someday",     "description": "🌙 Список «когда-нибудь»"},
         {"command": "inbox",       "description": "📥 Необработанные записи"},
         {"command": "reminders",   "description": "🔮 Послания и фразы"},
