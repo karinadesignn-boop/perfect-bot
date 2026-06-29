@@ -261,6 +261,13 @@ async def _find_all_items(chat_id: int, keywords: str, hint_type: str | None = N
     return rows
 
 
+async def _soft_delete(item_id: int) -> None:
+    """Mark item as deleted (recoverable). Never hard-deletes."""
+    sb = get_sb()
+    await _db(lambda f=item_id: sb.table('items')
+              .update({'status': 'deleted'}).eq('id', f).execute())
+
+
 async def ai_chat(text: str, history: list[dict] | None = None) -> str:
     messages = [{"role": "system", "content": (
         "Ты личный ассистент Карины. Отвечай по-русски, тепло и кратко. "
@@ -310,11 +317,19 @@ def _strip_delete_verb(t: str) -> str:
     return t.strip()
 
 
+_RESTORE_TRIGGERS = ('верни', 'восстанови', 'отмени удаление', 'отменить удаление',
+                     'верни назад', 'верни обратно', 'что удалила', 'что поудаляла')
+
+
 def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
     try:
         t = text.lower().strip()
 
-        # 1. clear_category — ПЕРВЫМ, до всего (убери все / удали все / очисти)
+        # 0. restore — ПЕРВЫМ
+        if any(tr in t for tr in _RESTORE_TRIGGERS):
+            return {"items": [{"type": "restore_last"}], "response": ""}
+
+        # 1. clear_category — до всего (убери все / удали все / очисти)
         if any(tr in t for tr in _CLEAR_TRIGGERS):
             return {"items": [{"type": "clear_category", "text": "__parse__"}], "response": ""}
 
@@ -441,6 +456,33 @@ async def process_and_save(chat_id: int, text: str, message: Message):
         reply = await ai_chat(text, _chat_history.get(chat_id, []))
         await message.answer(reply)
         _add_to_history(chat_id, text, reply)
+        return
+
+    # restore_last — отдельно, до основного цикла
+    if any(i.get("type") == "restore_last" for i in items):
+        try:
+            sb = get_sb()
+            deleted = await _db(lambda: sb.table('items')
+                .select('id, text, type')
+                .eq('chat_id', chat_id)
+                .eq('status', 'deleted')
+                .order('id', desc=True)
+                .limit(30)
+                .execute())
+            if not deleted.data:
+                await message.answer("Нечего восстанавливать — удалённых записей нет.")
+            else:
+                for r in deleted.data:
+                    rid = r['id']
+                    await _db(lambda f=rid: sb.table('items')
+                              .update({'status': 'active'}).eq('id', f).execute())
+                names = [f"• {r['text'][:60]}" for r in deleted.data[:10]]
+                more = f"\n...и ещё {len(deleted.data)-10}" if len(deleted.data) > 10 else ""
+                await message.answer(
+                    f"♻️ Восстановила {len(deleted.data)} записей:\n" + "\n".join(names) + more)
+            _add_to_history(chat_id, text, "восстановила удалённое")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}")
         return
 
     for item in items:
@@ -631,7 +673,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                     'created_at': datetime.now().isoformat()
                 }).execute())
                 fid = found['id']
-                await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                await _soft_delete(fid)
                 saved.append(f"📅 Перенесла в план на {move_date}: «{move_text}»")
             else:
                 saved.append(f"❓ Не нашла в инбоксе: «{old_text}»")
@@ -677,8 +719,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 )
             else:
                 for r in rows_clr.data:
-                    rid = r['id']
-                    await _db(lambda f=rid: sb.table('items').delete().eq('id', f).execute())
+                    await _soft_delete(r['id'])
                 saved.append(f"🗑 Удалила {len(rows_clr.data)} эл. из «{cat_name}»")
 
         elif msg_type == "remove_category":
@@ -686,7 +727,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             found = await _find_item(chat_id, old_text)
             if found and found.get('type') == 'inbox_category':
                 fid = found['id']
-                await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                await _soft_delete(fid)
                 saved.append(f"🗑 Категория удалена: «{found['text']}»")
             else:
                 # try direct text match among inbox_category
@@ -698,8 +739,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                     .limit(1)
                     .execute())
                 if rows_cat.data:
-                    fid = rows_cat.data[0]['id']
-                    await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                    await _soft_delete(rows_cat.data[0]['id'])
                     saved.append(f"🗑 Категория удалена: «{rows_cat.data[0]['text']}»")
                 else:
                     saved.append(f"❓ Категория «{old_text}» не найдена")
@@ -762,8 +802,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                     .execute())
                 if rows_del.data:
                     for r in rows_del.data:
-                        rid = r['id']
-                        await _db(lambda f=rid: sb.table('items').delete().eq('id', f).execute())
+                        await _soft_delete(r['id'])
                     saved.append(f"🗑 Удалила {len(rows_del.data)} пл. на {target_date}")
                 else:
                     saved.append(f"✨ На {target_date} и так ничего не было")
@@ -776,8 +815,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             all_found = await _find_all_items(chat_id, old_text, hint_type=scope)
             if all_found:
                 for f in all_found:
-                    fid = f['id']
-                    await _db(lambda fi=fid: sb.table('items').delete().eq('id', fi).execute())
+                    await _soft_delete(f['id'])
                 saved.append(f"🗑 Удалила {len(all_found)} эл.: «{old_text}»")
             else:
                 saved.append(f"❓ Не нашла «{old_text}»")
@@ -788,8 +826,7 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             hint = item.get("date") or None
             found = await _find_item(chat_id, old_text, hint_date=hint, hint_type=scope)
             if found:
-                fid = found['id']
-                await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
+                await _soft_delete(found['id'])
                 saved.append(f"🗑 Удалила: «{found['text']}»")
             else:
                 saved.append(f"❓ Не нашла «{old_text}» — возможно уже удалено")
@@ -1614,7 +1651,7 @@ async def done_plan(callback: CallbackQuery):
 async def delete_item(callback: CallbackQuery):
     item_id = int(callback.data.split(":")[1])
     sb = get_sb()
-    await _db(lambda: sb.table('items').delete().eq('id', item_id).execute())
+    await _soft_delete(item_id)
     await callback.message.edit_text("🗑 " + callback.message.text)
     await callback.answer("Удалено")
 
