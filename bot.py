@@ -131,7 +131,7 @@ plan — новое дело на дату. date=YYYY-MM-DD, time=HH:MM или n
 update — изменить существующее. old_text=ключевые слова, новые date/time.
 delete — удалить одно дело. old_text=ключевые слова.
 delete_day — очистить весь день. date=YYYY-MM-DD.
-show_day — показать план дня. date=YYYY-MM-DD.
+show_day — показать план дня ("покажи", "скинь", "что на", "план на"). date=YYYY-MM-DD.
 show_week — план недели картинкой.
 show_week_text — план недели текстом.
 show_month — план месяца. date=YYYY-MM-01.
@@ -147,6 +147,9 @@ delete_all — удалить ВСЕ вхождения дела (по всем 
 question — только если это вопрос без действия.
 
 ПРИМЕРЫ:
+"скинь план дня на 6 июля" → {{"type":"show_day","date":"2026-07-06"}}
+"покажи что на 15 августа" → {{"type":"show_day","date":"2026-08-15"}}
+"что запланировано на завтра" → {{"type":"show_day","date":"{tomorrow_str}"}}
 "удали поехать на Бали" → {{"type":"delete","old_text":"поехать на Бали"}}
 "убери встречу с врачом из someday" → {{"type":"delete","old_text":"встреча врач"}}
 "вычеркни йогу из рутин" → {{"type":"delete","old_text":"йога"}}
@@ -345,7 +348,8 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
             return {"items": [{"type": "show_someday"}], "response": ""}
 
         # 7. show_day
-        show_words = ('покажи', 'что у меня', 'что запланировано', 'мой план', 'расписани', 'план на день')
+        show_words = ('покажи', 'скинь', 'скинь мне', 'что у меня', 'что запланировано',
+                      'мой план', 'расписани', 'план на день', 'что на ')
         has_show = any(w in t for w in show_words) or t.startswith('план')
         has_today = 'сегодня' in t
         has_tomorrow = 'завтра' in t
