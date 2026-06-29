@@ -346,22 +346,32 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0
             _DAY_STEMS = ('понедельник', 'вторник', 'среду', 'среды', 'среде', 'четверг',
                           'пятниц', 'суббот', 'воскресень', 'каждого', 'каждый', 'всех дней',
                           'все дни', 'каждый день', 'из дней', 'из плана')
-            has_multi = '\n' in text.strip() or '•' in text or _re.search(r'\d\.\s', text)
+            has_multi = ('\n' in text.strip() or '•' in text or
+                         _re.search(r'\d\.\s', text) or t.count(',') >= 1)
             has_day_ref = any(d in t for d in _DAY_STEMS)
 
-            # "удали из каждого дня + список пунктов" — разбираем сами без AI
+            # "удали из каждого дня + список" — разбираем сами без AI
+            # Работает для bullets/newlines И для "пункт1, пункт2, пункт3"
             if has_day_ref and has_multi:
-                raw_lines = text.replace('•', '\n').replace('–', '\n').split('\n')
+                # Нормализуем: ищем двоеточие-разделитель после заголовка
+                colon_idx = max(t.find(':'), t.find('пункты'))
+                if colon_idx > 0:
+                    header = text[:colon_idx]
+                    body = text[colon_idx+1 if text[colon_idx] == ':' else colon_idx+6:]
+                else:
+                    header = ""
+                    body = text
+                # Разбиваем тело на пункты (по \n, •, или запятой)
+                body_split = _re.split(r'[,\n•]', body)
                 keywords_list = []
-                for line in raw_lines:
-                    line = line.strip().lstrip('•*-–—·0123456789.) ').strip()
-                    if not line:
+                for chunk in body_split:
+                    chunk = chunk.strip().lstrip('•*-–—·0123456789.) ').strip()
+                    if not chunk or len(chunk) < 3:
                         continue
-                    low = line.lower()
+                    low = chunk.lower()
                     if any(v in low for v in _DELETE_VERBS) or any(d in low for d in _DAY_STEMS):
-                        continue  # это заголовок, не пункт
-                    if len(line) > 2:
-                        keywords_list.append(line)
+                        continue
+                    keywords_list.append(chunk)
                 if keywords_list:
                     return {
                         "items": [{"type": "delete_all", "old_text": kw, "scope": "plan"}
@@ -370,7 +380,7 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str, chat_id: int = 0
                     }
 
             if has_multi or has_day_ref:
-                return None  # однострочный с упоминанием дня → AI
+                return None  # AI
             keywords = _strip_delete_verb(t)
             if keywords:
                 # Determine scope from context words
