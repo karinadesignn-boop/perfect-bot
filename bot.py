@@ -321,14 +321,34 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
         # 2. single delete — если есть глагол удаления и это НЕ "удали категорию"
         has_del = any(v in t for v in _DELETE_VERBS)
         if has_del and not any(s in t for s in _DELETE_STOP):
-            # Многострочный список или "каждого дня" / день недели → ИИ разберёт лучше
             _DAY_STEMS = ('понедельник', 'вторник', 'среду', 'среды', 'среде', 'четверг',
                           'пятниц', 'суббот', 'воскресень', 'каждого', 'каждый', 'всех дней',
-                          'все дни', 'каждый день')
+                          'все дни', 'каждый день', 'из дней', 'из плана')
             has_multi = '\n' in text.strip() or '•' in text or _re.search(r'\d\.\s', text)
             has_day_ref = any(d in t for d in _DAY_STEMS)
+
+            # "удали из каждого дня + список пунктов" — разбираем сами без AI
+            if has_day_ref and has_multi:
+                raw_lines = text.replace('•', '\n').replace('–', '\n').split('\n')
+                keywords_list = []
+                for line in raw_lines:
+                    line = line.strip().lstrip('•*-–—·0123456789.) ').strip()
+                    if not line:
+                        continue
+                    low = line.lower()
+                    if any(v in low for v in _DELETE_VERBS) or any(d in low for d in _DAY_STEMS):
+                        continue  # это заголовок, не пункт
+                    if len(line) > 2:
+                        keywords_list.append(line)
+                if keywords_list:
+                    return {
+                        "items": [{"type": "delete_all", "old_text": kw, "scope": "plan"}
+                                  for kw in keywords_list],
+                        "response": ""
+                    }
+
             if has_multi or has_day_ref:
-                return None  # AI разберёт список / конкретный день
+                return None  # однострочный с упоминанием дня → AI
             keywords = _strip_delete_verb(t)
             if keywords:
                 # Determine scope from context words
