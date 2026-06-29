@@ -143,6 +143,7 @@ reminder — духовная фраза. practice — практика. lifehac
 move_to_plan — из инбокса в план. old_text=ключевые слова, date=дата.
 add_category — новая категория инбокса. remove_category — удалить категорию (ярлык).
 clear_category — удалить ВСЕ элементы внутри категории. text=название категории.
+delete_all — удалить ВСЕ вхождения дела (по всем дням/спискам). old_text=ключевые слова.
 question — только если это вопрос без действия.
 
 ПРИМЕРЫ:
@@ -153,9 +154,13 @@ question — только если это вопрос без действия.
 "очисти категорию книги" → {{"type":"clear_category","text":"книги"}}
 "хочу поехать на Бали" → {{"type":"someday","text":"хочу поехать на Бали"}}
 "добавь в список когда-нибудь: купить машину" → {{"type":"someday","text":"купить машину"}}
+"удали из каждого дня: йога, медитация, зарядка" → [{{"type":"delete_all","old_text":"йога"}},{{"type":"delete_all","old_text":"медитация"}},{{"type":"delete_all","old_text":"зарядка"}}]
+"убери медитацию из понедельника" → {{"type":"delete","old_text":"медитация","date":"{today_str}"}}
 
 ПРАВИЛА:
 — delete работает для ЛЮБОГО списка: план, someday, inbox, рутины.
+— delete_all удаляет ВСЕ вхождения по всем дням. Используй когда просят "из каждого дня", "везде", список пунктов.
+— При списке пунктов для удаления — возвращай ОТДЕЛЬНЫЙ delete/delete_all для каждого пункта.
 — clear_category удаляет содержимое, remove_category удаляет ярлык.
 — question ТОЛЬКО если нет никакого действия с данными.
 — ТЕКСТ сохранять дословно, ссылки не удалять.
@@ -223,6 +228,24 @@ async def _find_item(chat_id: int, keywords: str, hint_date: str | None = None) 
     return await _search()
 
 
+async def _find_all_items(chat_id: int, keywords: str) -> list[dict]:
+    """Find ALL active items matching keywords (for bulk delete across all days)."""
+    sb = get_sb()
+    terms = [w for w in keywords.lower().split() if len(w) > 2]
+    if not terms:
+        return []
+    rows: list[dict] = []
+    seen_ids: set = set()
+    for pattern in ["%" + "%".join(terms[:3]) + "%", *[f"%{t}%" for t in terms[:4]]]:
+        q = (sb.table('items').select('id, text')
+             .eq('chat_id', chat_id).eq('status', 'active')
+             .ilike('text', pattern))
+        res = await _db(lambda _q=q: _q.execute())
+        for r in (res.data or []):
+            if r['id'] not in seen_ids:
+                seen_ids.add(r['id'])
+                rows.append(r)
+    return rows
 
 
 async def ai_chat(text: str, history: list[dict] | None = None) -> str:
@@ -285,6 +308,14 @@ def _quick_intent(text: str, today_str: str, tomorrow_str: str) -> dict | None:
         # 2. single delete — если есть глагол удаления и это НЕ "удали категорию"
         has_del = any(v in t for v in _DELETE_VERBS)
         if has_del and not any(s in t for s in _DELETE_STOP):
+            # Многострочный список или "каждого дня" / день недели → ИИ разберёт лучше
+            _DAY_STEMS = ('понедельник', 'вторник', 'среду', 'среды', 'среде', 'четверг',
+                          'пятниц', 'суббот', 'воскресень', 'каждого', 'каждый', 'всех дней',
+                          'все дни', 'каждый день')
+            has_multi = '\n' in text.strip() or '•' in text or _re.search(r'\d\.\s', text)
+            has_day_ref = any(d in t for d in _DAY_STEMS)
+            if has_multi or has_day_ref:
+                return None  # AI разберёт список / конкретный день
             keywords = _strip_delete_verb(t)
             if keywords:
                 return {"items": [{"type": "delete", "old_text": keywords}], "response": ""}
@@ -679,9 +710,21 @@ async def process_and_save(chat_id: int, text: str, message: Message):
             else:
                 saved.append("❓ Не поняла какой день очистить")
 
+        elif msg_type == "delete_all":
+            old_text = item.get("old_text", "")
+            all_found = await _find_all_items(chat_id, old_text)
+            if all_found:
+                for f in all_found:
+                    fid = f['id']
+                    await _db(lambda fi=fid: sb.table('items').delete().eq('id', fi).execute())
+                saved.append(f"🗑 Удалила {len(all_found)} эл.: «{old_text}»")
+            else:
+                saved.append(f"❓ Не нашла «{old_text}»")
+
         elif msg_type == "delete":
             old_text = item.get("old_text", "")
-            found = await _find_item(chat_id, old_text)
+            hint = item.get("date") or None
+            found = await _find_item(chat_id, old_text, hint_date=hint)
             if found:
                 fid = found['id']
                 await _db(lambda f=fid: sb.table('items').delete().eq('id', f).execute())
