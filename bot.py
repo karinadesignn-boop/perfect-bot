@@ -374,21 +374,9 @@ async def process_and_save(chat_id: int, text: str, message: Message):
                 monday = today_vn - timedelta(days=today_vn.weekday())
                 days_w = [monday + timedelta(days=i) for i in range(7)]
                 tasks = await _fetch_tasks(chat_id, days_w[0], days_w[-1])
-                sb = get_sb()
-                routines_res = await _db(lambda: sb.table('items')
-                    .select('text')
-                    .eq('chat_id', chat_id)
-                    .eq('type', 'routine')
-                    .eq('status', 'active')
-                    .order('id')
-                    .execute())
                 day_names = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
                 header = f"🔮 *план на неделю · {days_w[0].strftime('%d.%m')} — {days_w[-1].strftime('%d.%m')}*"
                 lines = [header]
-                if routines_res.data:
-                    lines += ["", "🐈‍⬛ *ритуалы каждого дня*"]
-                    for r in routines_res.data:
-                        lines.append(f"🧿  {r['text']}")
                 for d in days_w:
                     ds = d.strftime('%Y-%m-%d')
                     day_tasks = tasks.get(ds, [])
